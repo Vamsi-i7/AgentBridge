@@ -22,7 +22,8 @@ export class DashboardServer {
     this.host = options.host || '127.0.0.1'; // Strictly localhost
     // Random per-run token: shown once, never hard-coded, no default string
     this.authToken = options.authToken || process.env.AGENT_BRIDGE_DASHBOARD_TOKEN || crypto.randomBytes(24).toString('hex');
-    this.service = options.service || new CommandCenterService(options);
+    this.logger = options.logger || options.auditLogger || null;
+    this.service = options.service || new CommandCenterService({ ...options, logger: this.logger });
     this.eventBus = options.eventBus || null;
     this.server = null;
 
@@ -176,23 +177,52 @@ export class DashboardServer {
         // Read body
         let body = '';
         for await (const chunk of req) body += chunk;
-        const data = JSON.parse(body || '{}');
+        let data = {};
+        try {
+          data = JSON.parse(body || '{}');
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'Invalid JSON payload' }));
+        }
 
         // Privilege gate: Agents strictly forbidden from approving
-        const approver = req.headers['x-approver-identity'] || 'user';
-        if (approver.startsWith('agent:') || approver.includes('gemini') || approver.includes('chatgpt') || approver.includes('claude')) {
+        const claimedApprover = req.headers['x-approver-identity'];
+        if (claimedApprover && (
+          claimedApprover.startsWith('agent:') ||
+          claimedApprover.includes('gemini') ||
+          claimedApprover.includes('chatgpt') ||
+          claimedApprover.includes('claude') ||
+          claimedApprover.includes('antigravity') ||
+          claimedApprover.includes('freebuff')
+        )) {
           res.writeHead(403, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Forbidden: Agents cannot approve privileged actions' }));
           return;
         }
 
+        // Approver identity is bound strictly to the authenticated dashboard session, never from caller parameter
+        const approver = 'dashboard:human-operator';
         const approvalId = data.approvalId || 'appr_seed_1';
-        const decision = data.decision || 'approve';
-        const result = this.service.decideApproval(approvalId, decision, approver);
+        const decision = data.decision === 'reject' ? 'reject' : 'approve';
 
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, result }));
-        return;
+        try {
+          const result = this.service.decideApproval(approvalId, decision, approver);
+          if (this.logger && typeof this.logger.log === 'function') {
+            this.logger.log({
+              agentId: 'system',
+              action: 'dashboard_approval',
+              status: 'success',
+              details: { approvalId, decision, approver, target: result?.target }
+            });
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, result }));
+          return;
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+          return;
+        }
       }
     }
 

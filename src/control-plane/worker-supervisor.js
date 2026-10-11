@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import EventEmitter from 'node:events';
 import { CONFIG } from '../config.js';
 import { getScrubbedEnv } from '../utils/scrubbed-env.js';
+import { getAgentManifest } from '../capabilities/agent-manifest.js';
 
 export class WorkerSupervisor extends EventEmitter {
   constructor(options = {}) {
@@ -81,8 +82,15 @@ export class WorkerSupervisor extends EventEmitter {
     return { running: false, pid: null, managed: false };
   }
 
+  registerWorkerScript(agentId, scriptPath) {
+    if (agentId && scriptPath) {
+      this.workerScripts[agentId.toLowerCase()] = scriptPath;
+    }
+  }
+
   async startWorker(agentId, options = {}) {
-    const scriptPath = this.workerScripts[agentId];
+    const manifest = getAgentManifest(agentId);
+    const scriptPath = this.workerScripts[agentId] || this.workerScripts[agentId?.toLowerCase()] || manifest?.workerScript;
     if (!scriptPath || !fs.existsSync(scriptPath)) {
       throw new Error(`No worker script found for agent '${agentId}' at: ${scriptPath}`);
     }

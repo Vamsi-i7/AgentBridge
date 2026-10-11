@@ -20,6 +20,7 @@ export {
 };
 
 const ADAPTER_FACTORIES = new Map([
+  ['antigravity', (opts) => new AntigravitySessionAdapter(opts)],
   ['antigravity-ide', (opts) => new AntigravitySessionAdapter(opts)],
   ['claude-desktop', (opts) => new ClaudeDesktopSessionAdapter(opts)],
   ['chatgpt-desktop', (opts) => new ChatGPTSessionAdapter(opts)],

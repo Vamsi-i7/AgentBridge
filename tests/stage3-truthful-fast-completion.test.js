@@ -86,6 +86,7 @@ test('Stage 3: Truthful and Fast Completion Verification Suite', async (t) => {
       response: 'Authoritative authenticated result',
       attemptId: claim2.attemptId,
       epoch: claim2.epoch,
+      nonce: claim2.nonce,
       completionConfidence: 'AUTHENTICATED_SUBMIT'
     });
     assert.equal(passRes.status, 'completed');
@@ -159,6 +160,7 @@ test('Stage 3: Truthful and Fast Completion Verification Suite', async (t) => {
       response: 'Batch 42 analysis complete: zero defects',
       attemptId: parsedSuffix.attemptId,
       epoch: parsedSuffix.epoch,
+      nonce: parsedSuffix.nonce,
       completionConfidence: 'AUTHENTICATED_SUBMIT'
     });
 

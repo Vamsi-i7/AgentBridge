@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { ModelOrchestrator } from './model-orchestrator.js';
 import { DesktopInvisibilityMonitor } from './desktop-invisibility-monitor.js';
 import { detectResponseMode, ResponseMode } from '../artifacts/response-preserver.js';
+import { listAllAgentManifests } from '../capabilities/agent-manifest.js';
 
 export const CollaborationStatus = Object.freeze({
   PENDING: 'pending',
@@ -582,12 +583,16 @@ export class AutonomousCollaborationOrchestrator extends EventEmitter {
    */
   selectBestAgent({
     requiredDimension = 'model_execution',
-    candidateAgents = ['chatgpt', 'claude', 'gemini', 'antigravity'],
+    candidateAgents = null,
     preferredAgent = null,
     verifyLiveness = true
   } = {}) {
+    const defaultCandidates = listAllAgentManifests().map(m => m.agentId);
+    const resolvedCandidates = (Array.isArray(candidateAgents) && candidateAgents.length > 0)
+      ? candidateAgents
+      : defaultCandidates;
     const liveAgents = this.presence ? this.presence.listAgents().map(a => a.agentId.toLowerCase()) : [];
-    const candidates = candidateAgents.map(a => a.toLowerCase());
+    const candidates = resolvedCandidates.map(a => a.toLowerCase());
 
     if (preferredAgent) {
       const normPref = preferredAgent.toLowerCase();

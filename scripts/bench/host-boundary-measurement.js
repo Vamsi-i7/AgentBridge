@@ -30,9 +30,11 @@ export async function runHostBoundaryHarness({ port = 8997, iterations = 5 } = {
   const controller = new ProjectController(guard, logger);
   const mailbox = new MailboxHub(logger);
 
+  const apiKey = 'bench_key_' + crypto.randomBytes(8).toString('hex');
   const server = new BridgeHttpServer({
     port,
     host: '127.0.0.1',
+    apiKey,
     auditLogger: logger,
     permissionGuard: guard,
     mailboxHub: mailbox,
@@ -64,6 +66,7 @@ export async function runHostBoundaryHarness({ port = 8997, iterations = 5 } = {
     {
       const client = new AgentBridgeClient({
         baseUrl: `http://127.0.0.1:${port}`,
+        apiKey,
         agentId: 'zia-sdk-caller'
       });
 
@@ -121,7 +124,11 @@ export async function runHostBoundaryHarness({ port = 8997, iterations = 5 } = {
 
         const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-agent-id': 'external-mcp-client' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-agent-id': 'external-mcp-client',
+            'x-api-key': apiKey
+          },
           body: JSON.stringify({
             jsonrpc: '2.0',
             id: i + 1,
@@ -168,7 +175,11 @@ export async function runHostBoundaryHarness({ port = 8997, iterations = 5 } = {
 
       const recRes = await fetch(`http://127.0.0.1:${port}/mcp`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-agent-id': 'external-mcp-client' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-agent-id': 'external-mcp-client',
+          'x-api-key': apiKey
+        },
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: 999,

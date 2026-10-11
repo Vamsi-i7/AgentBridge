@@ -12,6 +12,7 @@ export const ObserverState = Object.freeze({
 });
 
 export const CompletionConfidence = Object.freeze({
+  UNKNOWN: 'UNKNOWN',
   EXPLICIT_END_OF_TURN: 'EXPLICIT_END_OF_TURN',
   INDICATOR_BASED: 'INDICATOR_BASED',
   STABILITY_HEURISTIC: 'STABILITY_HEURISTIC',

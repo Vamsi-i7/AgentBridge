@@ -353,7 +353,7 @@ export class ResponsePreserver {
       correlationTier: artifact.correlationTier || 'direct_session',
       attemptEpoch: artifact.attemptEpoch || 1,
       originRoute: artifact.originRoute || 'bridge',
-      completionConfidence: artifact.executionMetadata?.completionConfidence || 'EXPLICIT_END_OF_TURN',
+      completionConfidence: artifact.executionMetadata?.completionConfidence || 'UNKNOWN',
       isHeuristic: Boolean(artifact.executionMetadata?.isHeuristic || artifact.executionMetadata?.completionConfidence === 'STABILITY_HEURISTIC'),
       observedSignals: artifact.executionMetadata?.observedSignals || null,
       stableTicks: artifact.executionMetadata?.stableTicks ?? null,

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveSecret, loadKeychainSecret } from './config-resolver.js';
 import { REGISTERED_VERIFICATION_TOKENS } from './security/verification-tokens.js';
+import { listAllAgentManifests } from './capabilities/agent-manifest.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -116,16 +117,28 @@ export const CONFIG = {
     process.env.AGENT_BRIDGE_ALLOW_IDENTITY_COMPATIBILITY === '1' ||
     process.env.AGENT_BRIDGE_ALLOW_IDENTITY_COMPATIBILITY === 'true',
 
-  // Known agent identities
-  AGENT_IDENTITIES: [
-    'chatgpt-desktop',
-    'claude-desktop',
-    'zia',
-    'antigravity-ide',
-    'gemini',
-    'freebuff',
-    'system'
-  ],
+  // Known agent identities (dynamically incorporates all registered agent manifests)
+  get AGENT_IDENTITIES() {
+    const base = [
+      'chatgpt-desktop',
+      'claude-desktop',
+      'zia',
+      'antigravity-ide',
+      'gemini',
+      'freebuff',
+      'system'
+    ];
+    try {
+      const manifests = listAllAgentManifests();
+      const set = new Set(base);
+      for (const m of manifests) {
+        if (m.agentId) set.add(m.agentId.toLowerCase());
+      }
+      return Array.from(set);
+    } catch {
+      return base;
+    }
+  },
 
   // Whitelisted command executables for safe execution
   SAFE_COMMANDS: [

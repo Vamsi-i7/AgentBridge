@@ -90,12 +90,14 @@ export class AntigravitySessionAdapter extends AgentSessionAdapter {
       headlessExecution: true,
       externalModelWakeup: true,
       idleWakeupSupported: true,
+      autonomousModelWake: 'unsupported; interactive client only',
       activeTurnRpc: true,
       desktopNotificationSupported: false,
       fileAccess: true,
       gitAccess: true,
       mcpStdio: true,
       requiresUserPrompt: false,
+      pendingWorkDelivery: 'response_digest',
       notes: 'Antigravity IDE runs autonomous background workers (AgentRunner) that genuinely wake from EventBus, claim tasks atomically, execute tool operations, and deliver correlated responses without manual intervention.'
     };
   }

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { TaskManager } from './task-manager.js';
+import { TaskManager, runInImmediateTx } from './task-manager.js';
 import { EventBus } from './event-bus.js';
 import { RequestTracer, LifecycleStage } from './diagnostics/request-tracer.js';
 import {
@@ -18,6 +18,7 @@ import { CheapFirstRouter } from './routing/cheap-first-router.js';
 import { SemanticCache } from './cache/semantic-cache.js';
 
 export const CONFIDENCE_RANK = Object.freeze({
+  UNKNOWN: 0,
   STABILITY_HEURISTIC: 1,
   INDICATOR_BASED: 2,
   EXPLICIT_END_OF_TURN: 3,
@@ -69,10 +70,15 @@ export class MailboxHub {
     this.cheapRouter = new CheapFirstRouter({ auditLogger });
     this.semanticCache = new SemanticCache();
     this._recoveryTimer = null;
+    this._recoverySweepErrors = 0;
     this._ensureRequestColumns();
     if (this.db) {
       this.startRecoveryTimer(Number(process.env.AGENT_BRIDGE_RECOVERY_INTERVAL_MS) || 2000);
     }
+  }
+
+  get recoverySweepErrors() {
+    return this._recoverySweepErrors;
   }
 
   _ensureRequestColumns() {
@@ -100,6 +106,9 @@ export class MailboxHub {
         }
         if (!colNames.has('is_idempotent')) {
           this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN is_idempotent INTEGER DEFAULT 0;`);
+        }
+        if (!colNames.has('nonce')) {
+          this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN nonce TEXT;`);
         }
       } catch {}
     }
@@ -219,6 +228,7 @@ export class MailboxHub {
             lease_expires_at = ?,
             attempt_id = ?,
             epoch = ?,
+            nonce = ?,
             updated_at = ?
         WHERE request_id = ?
           AND (
@@ -226,7 +236,7 @@ export class MailboxHub {
             OR (status IN ('claimed', 'in_progress') AND (lease_expires_at IS NULL OR lease_expires_at <= ? OR claimed_by = ?))
           )
       `);
-      const res = updateStmt.run(claimerId, leaseExpiresAt, attemptId, epoch, now, requestId, now, claimerId);
+      const res = updateStmt.run(claimerId, leaseExpiresAt, attemptId, epoch, nonce, now, requestId, now, claimerId);
       if (res.changes === 0) {
         return { claimed: false, error: 'CONCURRENT_CLAIM_LOST' };
       }
@@ -314,80 +324,87 @@ export class MailboxHub {
     const uncertain = [];
 
     try {
-      let query = `
-        SELECT * FROM bridge_requests
-        WHERE status IN ('claimed', 'in_progress')
-          AND lease_expires_at IS NOT NULL
-          AND lease_expires_at < ?
-      `;
-      const params = [now];
-      if (agentId) {
-        query += ' AND to_agent = ?';
-        params.push(agentId);
-      }
-
-      const rows = this.db.prepare(query).all(...params);
-      for (const row of rows) {
-        let isIdempotent = Boolean(row.is_idempotent);
-        if (!isIdempotent && row.context) {
-          try {
-            const parsedCtx = typeof row.context === 'string' ? JSON.parse(row.context) : row.context;
-            if (parsedCtx?.isIdempotent === true || parsedCtx?.originalContext?.isIdempotent === true) {
-              isIdempotent = true;
-            }
-          } catch {}
+      runInImmediateTx(this.db, () => {
+        let query = `
+          SELECT * FROM bridge_requests
+          WHERE status IN ('claimed', 'in_progress')
+            AND lease_expires_at IS NOT NULL
+            AND lease_expires_at < ?
+        `;
+        const params = [now];
+        if (agentId) {
+          query += ' AND to_agent = ?';
+          params.push(agentId);
         }
 
-        const nextEpoch = (row.epoch || 1) + 1;
+        const rows = this.db.prepare(query).all(...params);
+        for (const row of rows) {
+          let isIdempotent = Boolean(row.is_idempotent);
+          if (!isIdempotent && row.context) {
+            try {
+              const parsedCtx = typeof row.context === 'string' ? JSON.parse(row.context) : row.context;
+              if (parsedCtx?.isIdempotent === true || parsedCtx?.originalContext?.isIdempotent === true) {
+                isIdempotent = true;
+              }
+            } catch {}
+          }
 
-        if (row.submitted_to_provider || row.delivery_state === 'PROMPT_SUBMITTED') {
-          if (!isIdempotent) {
-            const errorMsg = `DELIVERY_UNCERTAIN: Worker lease expired after prompt was submitted to provider. Blind re-injection denied because request is not declared idempotent.`;
-            this.db.prepare(`
-              UPDATE bridge_requests
-              SET status = 'delivery_uncertain',
-                  delivery_state = 'DELIVERY_UNCERTAIN',
-                  error = ?,
-                  epoch = ?,
-                  claimed_by = NULL,
-                  lease_expires_at = NULL,
-                  updated_at = ?
-              WHERE request_id = ?
-            `).run(errorMsg, nextEpoch, now, row.request_id);
+          const nextEpoch = (row.epoch || 1) + 1;
 
-            uncertain.push({ requestId: row.request_id, epoch: nextEpoch, error: errorMsg });
+          if (row.submitted_to_provider || row.delivery_state === 'PROMPT_SUBMITTED') {
+            if (!isIdempotent) {
+              const errorMsg = `DELIVERY_UNCERTAIN: Worker lease expired after prompt was submitted to provider. Blind re-injection denied because request is not declared idempotent.`;
+              const res = this.db.prepare(`
+                UPDATE bridge_requests
+                SET status = 'delivery_uncertain',
+                    delivery_state = 'DELIVERY_UNCERTAIN',
+                    error = ?,
+                    epoch = ?,
+                    claimed_by = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = ?
+                WHERE request_id = ? AND status IN ('claimed', 'in_progress')
+              `).run(errorMsg, nextEpoch, now, row.request_id);
+
+              if (res.changes > 0) {
+                uncertain.push({ requestId: row.request_id, epoch: nextEpoch, error: errorMsg });
+                this.logger?.log?.({
+                  agentId: row.to_agent || 'system',
+                  action: 'request_delivery_uncertain',
+                  status: 'delivery_uncertain',
+                  details: { requestId: row.request_id, epoch: nextEpoch, reason: errorMsg }
+                });
+              }
+              continue;
+            }
+          }
+
+          const res = this.db.prepare(`
+            UPDATE bridge_requests
+            SET status = 'pending',
+                delivery_state = 'RECOVERED_PENDING',
+                submitted_to_provider = 0,
+                claimed_by = NULL,
+                lease_expires_at = NULL,
+                epoch = ?,
+                updated_at = ?
+            WHERE request_id = ? AND status IN ('claimed', 'in_progress')
+          `).run(nextEpoch, now, row.request_id);
+
+          if (res.changes > 0) {
+            recovered.push({ requestId: row.request_id, epoch: nextEpoch });
             this.logger?.log?.({
               agentId: row.to_agent || 'system',
-              action: 'request_delivery_uncertain',
-              status: 'delivery_uncertain',
-              details: { requestId: row.request_id, epoch: nextEpoch, reason: errorMsg }
+              action: 'recover_expired_request',
+              status: 'pending',
+              details: { requestId: row.request_id, epoch: nextEpoch }
             });
-            continue;
           }
         }
-
-        this.db.prepare(`
-          UPDATE bridge_requests
-          SET status = 'pending',
-              delivery_state = 'RECOVERED_PENDING',
-              submitted_to_provider = 0,
-              claimed_by = NULL,
-              lease_expires_at = NULL,
-              epoch = ?,
-              updated_at = ?
-          WHERE request_id = ?
-        `).run(nextEpoch, now, row.request_id);
-
-        recovered.push({ requestId: row.request_id, epoch: nextEpoch });
-        this.logger?.log?.({
-          agentId: row.to_agent || 'system',
-          action: 'recover_expired_request',
-          status: 'pending',
-          details: { requestId: row.request_id, epoch: nextEpoch }
-        });
-      }
+      });
     } catch (err) {
       this.logger?.debug?.('Error in recoverExpiredRequests', err);
+      throw err;
     }
 
     const totalChanges = recovered.length + uncertain.length;
@@ -398,13 +415,15 @@ export class MailboxHub {
     if (this._recoveryTimer) return this._recoveryTimer;
     try {
       this.runRecoverySweep();
-    } catch {}
+    } catch (err) {
+      // already recorded in runRecoverySweep
+    }
 
     this._recoveryTimer = setInterval(() => {
       try {
         this.runRecoverySweep();
       } catch (err) {
-        this.logger?.debug?.('Recovery sweep error', err);
+        // already recorded in runRecoverySweep
       }
     }, intervalMs);
 
@@ -422,12 +441,23 @@ export class MailboxHub {
   }
 
   runRecoverySweep() {
-    const sweep = {
-      requests: this.recoverExpiredRequests(),
-      tasks: this.tasks?.recoverExpiredTasks ? this.tasks.recoverExpiredTasks() : [],
-      attempts: (this.tasks?.attempts?.recoverExpiredAttempts) ? this.tasks.attempts.recoverExpiredAttempts() : []
-    };
-    return sweep;
+    try {
+      const sweep = {
+        requests: this.recoverExpiredRequests(),
+        tasks: this.tasks?.recoverExpiredTasks ? this.tasks.recoverExpiredTasks() : [],
+        attempts: (this.tasks?.attempts?.recoverExpiredAttempts) ? this.tasks.attempts.recoverExpiredAttempts() : []
+      };
+      return sweep;
+    } catch (err) {
+      this._recoverySweepErrors++;
+      this.logger?.log?.({
+        agentId: 'system',
+        action: 'recovery_sweep_error',
+        status: 'error',
+        details: { error: err?.message || String(err) }
+      });
+      throw err;
+    }
   }
 
   close() {
@@ -984,7 +1014,7 @@ export class MailboxHub {
           bridgeUnaltered: !isQuarantined && (reqMode === ResponseMode.DIRECT),
           untrustedData: true,
           quarantined: isQuarantined,
-          completionConfidence: artifact?.executionMetadata?.completionConfidence || 'EXPLICIT_END_OF_TURN',
+          completionConfidence: artifact?.executionMetadata?.completionConfidence || 'UNKNOWN',
           ...this._resolveModelCounters(tokenMetrics, reqMode),
           timestamp: existingReq.completed_at || existingReq.updated_at
         };
@@ -1090,7 +1120,7 @@ export class MailboxHub {
           bridgeUnaltered: !isQuarantined && (reqMode === ResponseMode.DIRECT),
           untrustedData: true,
           quarantined: isQuarantined,
-          completionConfidence: outcome?.completionConfidence || artifact?.executionMetadata?.completionConfidence || 'EXPLICIT_END_OF_TURN',
+          completionConfidence: outcome?.completionConfidence || artifact?.executionMetadata?.completionConfidence || 'UNKNOWN',
           ...this._resolveModelCounters(tokenMetrics, reqMode),
           timestamp: outcome.completedAt || new Date().toISOString()
         };
@@ -1257,6 +1287,7 @@ export class MailboxHub {
     if (asyncMode) {
       return {
         mode: 'queued_in_mailbox',
+        deliveryState: 'queued-awaiting-pull',
         fromAgent: normFrom,
         toAgent: normTo,
         requestId: reqId,
@@ -1334,7 +1365,7 @@ export class MailboxHub {
         bridgeUnaltered: !isQuarantined && (resolvedMode === ResponseMode.DIRECT),
         untrustedData: true,
         quarantined: isQuarantined,
-        completionConfidence: outcome?.completionConfidence || artifact?.executionMetadata?.completionConfidence || 'EXPLICIT_END_OF_TURN',
+        completionConfidence: outcome?.completionConfidence || artifact?.executionMetadata?.completionConfidence || 'UNKNOWN',
         ...this._resolveModelCounters(tokenMetrics, resolvedMode),
         timestamp: outcome.completedAt || new Date().toISOString()
       };
@@ -1418,6 +1449,7 @@ export class MailboxHub {
     error = null,
     attemptId = null,
     epoch = null,
+    nonce = null,
     completionConfidence = null,
     observedSignals = null,
     stableTicks = null,
@@ -1438,21 +1470,24 @@ export class MailboxHub {
       const hasSideEffects = Boolean(
         existingTask?.hasSideEffects ||
         ctxObj?.hasSideEffects ||
+        ctxObj?.originalContext?.hasSideEffects ||
         (ctxObj?.tool && isEffectfulTool(ctxObj.tool)) ||
+        (ctxObj?.originalContext?.tool && isEffectfulTool(ctxObj.originalContext.tool)) ||
         (existingTask?.tool && isEffectfulTool(existingTask.tool))
       );
       const reqConfidence = existingTask?.requiredConfidence || ctxObj?.requiredConfidence || ctxObj?.originalContext?.requiredConfidence || (hasSideEffects ? 'INDICATOR_BASED' : null);
-      const effectiveConfidence = completionConfidence || 'EXPLICIT_END_OF_TURN';
+      const effectiveConfidence = completionConfidence || 'UNKNOWN';
 
       const CONFIDENCE_RANK = {
+        'UNKNOWN': 0,
         'STABILITY_HEURISTIC': 1,
         'INDICATOR_BASED': 2,
         'EXPLICIT_END_OF_TURN': 3,
         'AUTHENTICATED_SUBMIT': 4
       };
 
-      if (hasSideEffects && effectiveConfidence === 'STABILITY_HEURISTIC') {
-        const errMsg = 'INSUFFICIENT_COMPLETION_CONFIDENCE: STABILITY_HEURISTIC completions are not accepted for tasks with side effects.';
+      if (hasSideEffects && (effectiveConfidence === 'STABILITY_HEURISTIC' || effectiveConfidence === 'UNKNOWN')) {
+        const errMsg = `INSUFFICIENT_COMPLETION_CONFIDENCE: ${effectiveConfidence} completions are not accepted for tasks with side effects.`;
         return this.submitTaskResult({
           taskId,
           agentId,
@@ -1474,9 +1509,53 @@ export class MailboxHub {
           epoch
         });
       }
+
+      if (effectiveConfidence === 'AUTHENTICATED_SUBMIT') {
+        if (!attemptId || epoch === null || epoch === undefined || !nonce) {
+          const errMsg = 'AUTHENTICATED_SUBMIT_REJECTED: Recipient submit requires valid attemptId, epoch, and nonce tokens.';
+          if (this.tasks?.attempts) {
+            try {
+              this.tasks.attempts.quarantineLateResponse({
+                attemptId: attemptId || `missing_${taskId}`,
+                requestId: taskId,
+                epoch: Number(epoch) || 0,
+                payload: result || error,
+                reason: errMsg
+              });
+            } catch {}
+          }
+          return {
+            status: 'quarantined',
+            quarantined: true,
+            taskId,
+            error: errMsg
+          };
+        }
+        if (this.tasks?.attempts && attemptId) {
+          try {
+            const att = this.tasks.attempts.getAttempt(attemptId);
+            if (att && att.nonce && att.nonce !== nonce) {
+              const errMsg = `AUTHENTICATED_SUBMIT_REJECTED: Cryptographic nonce mismatch for attempt '${attemptId}'.`;
+              this.tasks.attempts.quarantineLateResponse({
+                attemptId,
+                requestId: taskId,
+                epoch: Number(epoch) || 0,
+                payload: result || error,
+                reason: errMsg
+              });
+              return {
+                status: 'quarantined',
+                quarantined: true,
+                taskId,
+                error: errMsg
+              };
+            }
+          } catch {}
+        }
+      }
     }
 
-    const effectiveConfidence = completionConfidence || 'EXPLICIT_END_OF_TURN';
+    const effectiveConfidence = completionConfidence || 'UNKNOWN';
 
     const submitWork = (targetDb, stageEventFn = null) => {
       updated = this.tasks.updateTaskStatus({
@@ -1771,6 +1850,25 @@ export class MailboxHub {
     return res;
   }
 
+  cancelRequest(arg1, arg2 = null, arg3 = 'Request cancelled') {
+    const { requestId, agentId, reason } = typeof arg1 === 'object' && arg1 !== null
+      ? { requestId: arg1.requestId, agentId: arg1.agentId, reason: arg1.reason || 'Request cancelled' }
+      : { requestId: arg1, agentId: arg2, reason: arg3 || 'Request cancelled' };
+    if (!requestId) throw new Error('requestId is required');
+    const reqRow = this.db?.prepare('SELECT * FROM bridge_requests WHERE request_id = ?').get(requestId);
+    if (!reqRow) throw new Error(`Request not found: ${requestId}`);
+    if (reqRow.task_id) {
+      return this.cancelTask({ taskId: reqRow.task_id, agentId, reason });
+    }
+    const now = new Date().toISOString();
+    this.db?.prepare(`
+      UPDATE bridge_requests
+      SET status = 'cancelled', error = ?, updated_at = ?, completed_at = ?
+      WHERE request_id = ? AND status NOT IN ('completed', 'failed', 'cancelled')
+    `).run(reason, now, now, requestId);
+    return this.getRequest(requestId, { agentId, isPrivileged: true });
+  }
+
   acknowledgeDelivery({ requestId, agentId = null, clientTimestamp = null }) {
     if (!requestId || typeof requestId !== 'string') {
       throw new Error('requestId is required to acknowledge delivery.');
@@ -1878,7 +1976,7 @@ export class MailboxHub {
       untrustedData: true,
       quarantined: isQuarantined,
       quarantineReason: art?.quarantineReason || null,
-      completionConfidence: art?.executionMetadata?.completionConfidence || (row.status === 'completed' ? 'EXPLICIT_END_OF_TURN' : null),
+      completionConfidence: art?.executionMetadata?.completionConfidence || (row.status === 'completed' ? 'UNKNOWN' : null),
       isHeuristic: Boolean(art?.executionMetadata?.isHeuristic || art?.executionMetadata?.completionConfidence === 'STABILITY_HEURISTIC'),
       observedSignals: art?.executionMetadata?.observedSignals || null,
       stableTicks: art?.executionMetadata?.stableTicks ?? null,
@@ -1956,6 +2054,7 @@ export class MailboxHub {
     error = null,
     attemptId = null,
     epoch = null,
+    nonce = null,
     completionConfidence = null,
     observedSignals = null,
     stableTicks = null,
@@ -2087,6 +2186,7 @@ export class MailboxHub {
         error,
         attemptId,
         epoch,
+        nonce,
         completionConfidence,
         observedSignals,
         stableTicks,
@@ -2094,7 +2194,7 @@ export class MailboxHub {
       });
     }
 
-    const effectiveConfidence = completionConfidence || 'EXPLICIT_END_OF_TURN';
+    const effectiveConfidence = completionConfidence || 'UNKNOWN';
 
     // Confidence and side-effects gating for direct requests
     if (status === 'completed') {
@@ -2106,19 +2206,22 @@ export class MailboxHub {
       }
       const hasSideEffects = Boolean(
         reqContext?.hasSideEffects ||
-        (reqContext?.tool && isEffectfulTool(reqContext.tool))
+        reqContext?.originalContext?.hasSideEffects ||
+        (reqContext?.tool && isEffectfulTool(reqContext.tool)) ||
+        (reqContext?.originalContext?.tool && isEffectfulTool(reqContext.originalContext.tool))
       );
       const reqConfidence = reqContext?.requiredConfidence || reqContext?.originalContext?.requiredConfidence || (hasSideEffects ? 'INDICATOR_BASED' : null);
 
       const CONFIDENCE_RANK = {
+        'UNKNOWN': 0,
         'STABILITY_HEURISTIC': 1,
         'INDICATOR_BASED': 2,
         'EXPLICIT_END_OF_TURN': 3,
         'AUTHENTICATED_SUBMIT': 4
       };
 
-      if (hasSideEffects && effectiveConfidence === 'STABILITY_HEURISTIC') {
-        const errMsg = 'INSUFFICIENT_COMPLETION_CONFIDENCE: STABILITY_HEURISTIC completions are not accepted for requests with side effects.';
+      if (hasSideEffects && (effectiveConfidence === 'STABILITY_HEURISTIC' || effectiveConfidence === 'UNKNOWN')) {
+        const errMsg = `INSUFFICIENT_COMPLETION_CONFIDENCE: ${effectiveConfidence} completions are not accepted for requests with side effects.`;
         return this.answerRequest({
           requestId,
           agentId,
@@ -2139,6 +2242,38 @@ export class MailboxHub {
           attemptId,
           epoch
         });
+      }
+
+      if (effectiveConfidence === 'AUTHENTICATED_SUBMIT') {
+        if (!attemptId || epoch === null || epoch === undefined || !nonce) {
+          const errMsg = 'AUTHENTICATED_SUBMIT_REJECTED: Recipient submit requires valid attemptId, epoch, and nonce tokens.';
+          return {
+            status: 'quarantined',
+            quarantined: true,
+            requestId,
+            error: errMsg
+          };
+        }
+        if (reqRow.nonce && reqRow.nonce !== nonce) {
+          const errMsg = `AUTHENTICATED_SUBMIT_REJECTED: Cryptographic nonce mismatch for request '${requestId}'.`;
+          if (this.tasks?.attempts) {
+            try {
+              this.tasks.attempts.quarantineLateResponse({
+                attemptId,
+                requestId,
+                epoch: Number(epoch) || 0,
+                payload: response || error,
+                reason: errMsg
+              });
+            } catch {}
+          }
+          return {
+            status: 'quarantined',
+            quarantined: true,
+            requestId,
+            error: errMsg
+          };
+        }
       }
     }
 

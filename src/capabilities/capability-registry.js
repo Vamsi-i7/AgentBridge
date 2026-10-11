@@ -210,6 +210,14 @@ export class CapabilityRegistry {
    * Declared or unknown capabilities NEVER count as verified.
    */
   hasVerifiedCapability(agentId, routeId, dimension) {
+    if (!dimension && routeId) {
+      dimension = routeId;
+      routeId = null;
+    }
+    if (!routeId || routeId === agentId) {
+      const caps = this.listAgentCapabilities(agentId);
+      return caps.some(c => c.dimension === dimension && (c.state === CapabilityState.VERIFIED || c.state === CapabilityState.PROBED));
+    }
     const cap = this.getCapability(agentId, routeId, dimension);
     return cap.state === CapabilityState.VERIFIED || cap.state === CapabilityState.PROBED;
   }
@@ -404,8 +412,8 @@ export class CapabilityRegistry {
       return this.getRouteCapabilities(normAgent, normRoute);
     }
 
-    // 5. Antigravity IDE / Gemini Direct
-    if (normAgent === 'antigravity-ide' || normAgent === 'gemini') {
+    // 5. Antigravity IDE / Antigravity / Gemini / Freebuff Direct
+    if (normAgent === 'antigravity-ide' || normAgent === 'antigravity' || normAgent === 'gemini' || normAgent === 'freebuff') {
       this.setCapability({
         agentId: normAgent,
         routeId: normRoute,
@@ -420,6 +428,14 @@ export class CapabilityRegistry {
         dimension: CapabilityDimension.TOOL_EXECUTION,
         state: CapabilityState.VERIFIED,
         evidence: 'Direct tool dispatch registered in IDE',
+        trustTier: TrustTier.T0_NATIVE_API
+      });
+      this.setCapability({
+        agentId: normAgent,
+        routeId: normRoute,
+        dimension: CapabilityDimension.AUTONOMOUS_WAKEUP,
+        state: CapabilityState.UNSUPPORTED,
+        evidence: 'autonomous model wake: unsupported, interactive client only',
         trustTier: TrustTier.T0_NATIVE_API
       });
       this.setCapability({

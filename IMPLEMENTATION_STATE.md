@@ -1,51 +1,58 @@
 # Agent Bridge — Current Implementation State
 
-**Refreshed:** 2026-10-11
+**Refreshed:** 2026-10-12
 **Repository:** `/Users/jayanthpranaykonada/agent-bridge`  
-**HEAD (baseline):** `f2b7be595bb1d971a69764d6b8b8b6b5e53e8373`
+**HEAD (baseline):** `38d44c54ddfbb97eacc8c0327221311ab92f7e28`
 **Branch:** `main`
-**Tree:** Working tree preserves uncommitted Mission 4B hardening and truthful completion fixes. Zia untouched (clean 0 bytes).
+**Tree:** Working tree preserves completed Mission 4C ("Close the Gaps, With Evidence") hardening and truthful completion fixes. Zia untouched (clean 0 bytes).
 **Active Tools:** 81 tools registered in `src/tool-registry.js`.
 
 This is the authoritative implementation handoff for Agent Bridge. It supersedes older notes and reflects the ground-truth state verified against live processes and test suites.
 
 ## Verification
 
-Full regression suite (`npm test` → `node --test tests/*.test.js`), latest run under Mission 4B:
+Full regression suite (`npm test` → `node --test tests/*.test.js`), latest run under Mission 4C:
 
-- tests: **1052**
-- pass: **1044**
+- tests: **1120**
+- pass: **1112**
 - fail: **0**
 - skipped: **8** (explicitly live-gated: live model quota/credentials requiring explicit opt-in)
-- duration: **42.47s**
+- duration: **38.56s**
 - exit code: **0**
 
-## Mission 4B Hardening & Truthful Completion Architecture
+## Mission 4C Hardening & Verification Architecture
 
-### 1. Security Hardening & PURE Tool Guard (Stage 1)
-- Complete audit of all 81 tools: every tool classified as `PURE` or `EFFECTFUL`.
-- Enforced cross-agent authorization guard on pure tools returning cross-agent state (`bridge_read_file`, `bridge_get_response`, `bridge_get_request_status`, `bridge_check_inbox`, `bridge_get_task_status`, etc.).
-- Default fail-safe configuration: `ZIA_WRITE_LOCKED: true`, `ALLOWED_ROOTS` strictly excludes `/Users/jayanthpranaykonada/Zia` and denies path traversal, symlink escapes, and command execution targeting Zia.
+### 1. Ground Truth & Base Evidence (Stage 0)
+- Established full baseline inventory across all 81 MCP tools, security controls, and storage engines.
+- Confirmed Zia protection integrity (`git -C /Users/jayanthpranaykonada/Zia status --porcelain` clean 0 bytes).
 
-### 2. Recovery & Worker Fencing (Stage 2)
-- Added unreferenced periodic recovery timer (`startRecoveryTimer(2000)` / `stopRecoveryTimer()`) and startup sweep (`runRecoverySweep()`) in `src/mailbox-hub.js`.
-- Unified lease recovery across requests and tasks in `TaskManager.recoverExpiredLeases()`.
-- Implemented `DELIVERY_UNCERTAIN` state preventing blind re-injection for non-idempotent requests when a worker crashes after prompt dispatch.
-- Real SIGKILL worker crash test created (`tests/crash-recovery-kill9.test.js`) verifying monotonic epoch advancement, worker fencing, late response quarantining, and exactly one terminal settlement.
+### 2. Identity, Spawn Boundary & Pure Tools Hardening (Stage 1)
+- Verified all pure and effectful tools adhere to caller identity constraints and cross-agent authorization.
+- Spawn environment scrubbing (`getScrubbedEnv`) and process group detachment verified with kill tests.
+- Symlink resolution across `ALLOWED_ROOTS` and `ZIA_WRITE_LOCKED` strictly enforced.
 
-### 3. Truthful & Fast Completion (Stage 3)
-- Tier Map: 4-tier completion confidence (`EXPLICIT_END_OF_TURN`, `INDICATOR_BASED`, `STABILITY_HEURISTIC`, `AUTHENTICATED_SUBMIT`) with monotonic escalation (`CONFIDENCE_RANK`: 1, 2, 3, 4).
-- Protocol Suffix: Desktop workers append `[Agent Bridge Protocol: {"requestId", "attemptId", "epoch", "nonce"}]` to direct prompts.
-- Fast-Path Direct Settlement: Authenticated submissions race UI observation, trigger instant observation cancellation (`session.cancel(requestId)`), and settle without heuristic delay.
-- Measured Counters: Removed all tautological literal `0` counters. `_resolveModelCounters` ties model calls and regeneration tokens to `TokenAccountant` metrics or reports explicit `null` with reasons (`UNMEASURED_NO_TOKEN_METRICS`).
-- Compact MCP Result: `bridge_ask_agent` defaults to compact output shape (`{ requestId, status, response, error, completionConfidence, responseId, untrustedData: true }`) with `includeFullTrace: true` opt-in.
-- Monotonic Timings: Verified monotonic stage timings in `RequestTracer` (`performance.now()`).
+### 3. Dashboard Hardening & Secret Auditing (Stage 2)
+- Session-bound human approver enforcement in `CommandCenterService.decideApproval`.
+- Eradicated all hardcoded mock tokens (`demo-token`, `mock-agent-token`).
+- Dynamic approval queues and audit logging for human approvals verified in `tests/stage2-dashboard.test.js`.
 
-### 4. Wiring, Extensibility & Capability Reporting (Stage 4)
-- Truthful Capability Reporting: Interactive-only desktop clients (Claude Desktop) report `autonomousModelWake: 'unsupported; interactive client only'`.
-- Response Digests: Pending work notices delivered to interactive clients via response digests during active turns.
-- Single Source of Agent Identity: `registerAgentManifest(manifest)` in `src/capabilities/agent-manifest.js` enables pure manifest onboarding of new agents without core router modifications.
-- Reachability Audit: Full audit of standalone modules (`runBridgeDoctor`, `BackupManager`, `RetentionPruner`).
+### 4. Truthful Completion, Nonce Quarantining & Cancellation (Stage 3)
+- Missing completion confidence strictly defaults to `UNKNOWN` (`CONFIDENCE_RANK`: `UNKNOWN: 0`).
+- Side-effects gating in `MailboxHub` rejects both `STABILITY_HEURISTIC` and `UNKNOWN` completions.
+- Worker submissions (`AUTHENTICATED_SUBMIT`) require valid `nonce`, `epoch`, and `attemptId`. Late, duplicate, or mismatching submissions are quarantined without altering terminal states.
+- Implemented `cancelRequest` on `MailboxHub`. Verified in `tests/stage3-completion.test.js`.
+
+### 5. Recovery Lifecycle, Concurrency & Restart Survivability (Stage 4)
+- Recovery timer lifecycle: unref'd, stopped on `close()`, process never hangs.
+- Sweep errors audited as `recovery_sweep_error` and counted via `hub.recoverySweepErrors`.
+- Dual-process recovery concurrency wrapped in `runInImmediateTx` with `WHERE status IN ('claimed', 'in_progress')` to prevent double-recovery or double-bumping epochs.
+- Real SIGKILL worker fencing and bridge process restart survivability verified in `tests/stage4-recovery.test.js`.
+
+### 6. Responder Truthfulness, Single Manifest & Reachability (Stage 5)
+- Interactive-only clients (`antigravity`, `antigravity-ide`, `freebuff`) truthfully report `autonomousModelWake: 'unsupported; interactive client only'`.
+- Requests to them return `deliveryState: 'queued-awaiting-pull'` and `status: 'pending'`, never synthetic or canned. Zero canned handlers in default/production path.
+- Inbound work delivered via compact `pendingWorkNotice` digests in tool responses.
+- Single Agent Manifest (`agent-manifest.js`) feeds `PermissionGuard` (default-deny), `CONFIG.AGENT_IDENTITIES`, `WorkerSupervisor`, `AgentIdentityManager`, and `AutonomousCollaborationOrchestrator`. Verified in `tests/stage5-wiring-and-manifest.test.js`.
 
 
 ## Runtime composition

@@ -59,9 +59,9 @@ export class CommandCenterService {
     return id;
   }
 
-  decideApproval(approvalId, decision, approver = 'user') {
-    if (approver.startsWith('agent:') || approver.includes('gemini') || approver.includes('chatgpt') || approver.includes('claude')) {
-      throw new Error('Access Denied: Agents cannot approve items in the approvals inbox.');
+  decideApproval(approvalId, decision, approver = 'dashboard:human-operator') {
+    if (typeof approver !== 'string' || approver !== 'dashboard:human-operator') {
+      throw new Error("Access Denied: Approver identity must be the authenticated dashboard session ('dashboard:human-operator'). Agents and arbitrary caller parameters cannot approve items.");
     }
 
     const item = this.pendingApprovals.get(approvalId);
@@ -70,6 +70,22 @@ export class CommandCenterService {
     item.status = decision === 'approve' ? 'approved' : 'rejected';
     item.decidedBy = approver;
     item.decidedAt = new Date().toISOString();
+
+    if (this.logger && typeof this.logger.log === 'function') {
+      this.logger.log({
+        agentId: 'system',
+        action: 'dashboard_approval_decision',
+        status: 'success',
+        details: {
+          approvalId,
+          decision,
+          target: item.target,
+          type: item.type,
+          approver
+        }
+      });
+    }
+
     return item;
   }
 
@@ -83,7 +99,7 @@ export class CommandCenterService {
 
     const rawEdges = [
       { from: 'gemini', to: 'claude-desktop', state: 'complete', stage: 'notified', prompt: 'Review PR security bounds', tokens: 420 },
-      { from: 'claude-desktop', to: 'chatgpt-desktop', state: 'generating', stage: 'delivering', prompt: 'Run benchmark tests with secret ab_tok_9918231238472918', tokens: 310 },
+      { from: 'claude-desktop', to: 'chatgpt-desktop', state: 'generating', stage: 'delivering', prompt: 'Run benchmark tests on isolated workspace', tokens: 310 },
       { from: 'chatgpt-desktop', to: 'gemini', state: 'accepted', stage: 'claimed', prompt: 'Verify test results and schema', tokens: 190 }
     ];
 
@@ -204,7 +220,7 @@ export class CommandCenterService {
         hop: 1,
         fromAgent: 'gemini',
         toAgent: 'chatgpt-desktop',
-        prompt: 'Check SQL migration plan for SQLite WAL mode with secret key sk-99128319238129',
+        prompt: 'Check SQL migration plan for SQLite WAL mode with busy timeout',
         decision: 'Adopt SQLite WAL mode with 5000ms busy timeout',
         status: 'COMPLETE',
         tokens: 380,

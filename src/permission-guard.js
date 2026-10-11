@@ -7,6 +7,7 @@ import {
   isVerificationTokenRequest,
   SECURITY_DENIAL_MESSAGE
 } from './security/verification-tokens.js';
+import { getAgentManifest } from './capabilities/agent-manifest.js';
 
 export class PermissionGuard {
   constructor(config = CONFIG) {
@@ -73,8 +74,9 @@ export class PermissionGuard {
       return { allowed: false, reason: 'Invalid or missing agent identity.' };
     }
     const normalized = agentId.trim().toLowerCase();
-    if (!this.config.AGENT_IDENTITIES.includes(normalized)) {
-      return { allowed: false, reason: `Unknown agent identity '${agentId}'. Allowed: ${this.config.AGENT_IDENTITIES.join(', ')}` };
+    const isKnown = (this.config.AGENT_IDENTITIES || []).includes(normalized) || Boolean(getAgentManifest(normalized));
+    if (!isKnown) {
+      return { allowed: false, reason: `Unknown agent identity '${agentId}'. Allowed: ${(this.config.AGENT_IDENTITIES || []).join(', ')}` };
     }
     return { allowed: true, agentId: normalized };
   }

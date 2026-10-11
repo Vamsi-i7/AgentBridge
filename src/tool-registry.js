@@ -590,6 +590,8 @@ export class ToolRegistry {
       } else {
         callerAgentId = resolved.agentId;
       }
+    } else if (context.isPrivileged === true) {
+      callerAgentId = rawArgs.fromAgent || rawArgs.agentId || boundTransportId || 'system';
     } else if (boundTransportId) {
       // Bound/authenticated identity from transport
       const boundId = String(boundTransportId).trim().toLowerCase();
@@ -608,8 +610,6 @@ export class ToolRegistry {
         }
       }
       callerAgentId = boundTransportId;
-    } else if (context.isPrivileged === true) {
-      callerAgentId = rawArgs.agentId || rawArgs.fromAgent || 'system';
     } else {
       callerAgentId = 'anonymous';
     }
@@ -617,9 +617,9 @@ export class ToolRegistry {
     // Attach resolved agentId to arguments and context
     context.agentId = callerAgentId;
     const args = { ...rawArgs, agentId: callerAgentId };
-    if (rawArgs.fromAgent) args.fromAgent = callerAgentId;
-    if (rawArgs.approver) args.approver = callerAgentId;
-    if (rawArgs.actor) args.actor = callerAgentId;
+    if (rawArgs.fromAgent) args.fromAgent = context.isPrivileged ? rawArgs.fromAgent : callerAgentId;
+    if (rawArgs.approver) args.approver = context.isPrivileged ? rawArgs.approver : callerAgentId;
+    if (rawArgs.actor) args.actor = context.isPrivileged ? rawArgs.actor : callerAgentId;
 
     // Classification & Authoritative Execution Boundary Check
     const effectful = isEffectfulTool(name);

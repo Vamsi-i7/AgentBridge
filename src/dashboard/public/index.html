@@ -591,7 +591,7 @@
         if (!res.ok) return;
         const data = await res.json();
         const container = document.getElementById('approvals-container');
-        const items = data.items || [];
+        const items = data.approvals || data.items || [];
         if (items.length === 0) {
           container.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No pending approvals.</div>';
           return;
@@ -621,8 +621,7 @@
         const res = await fetchWithAuth('/api/approvals', {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
-            'X-Approver-Identity': 'user'
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify({ approvalId, decision })
         });
