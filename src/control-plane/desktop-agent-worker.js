@@ -43,7 +43,8 @@ export class DesktopAgentWorker extends EventEmitter {
     session = null,
     logger = null,
     leaseRefreshMs = 5000,
-    allowSyntheticHandlers = false
+    allowSyntheticHandlers = false,
+    workerId = null
   } = {}) {
     super();
     if (!agentId) throw new Error('DesktopAgentWorker requires an agentId');
@@ -55,6 +56,7 @@ export class DesktopAgentWorker extends EventEmitter {
     this.session = session;
     this.logger = logger || mailboxHub?.logger || null;
     this.leaseRefreshMs = leaseRefreshMs;
+    this.workerId = workerId || `${agentId}_worker_${Math.random().toString(36).slice(2, 7)}`;
 
     this.status = DesktopAgentWorkerStatus.STOPPED;
     this.subscription = null;
@@ -170,9 +172,13 @@ export class DesktopAgentWorker extends EventEmitter {
   async _deliver(requestId) {
     let request = this.mailbox?.getRequest ? this.mailbox.getRequest(requestId) : null;
     if (!request && this.mailbox?.getTask) {
-      const taskIdCandidate = requestId.startsWith('req_task_')
-        ? requestId.replace(/^req_/, '')
-        : (requestId.startsWith('task_') ? requestId : null);
+      let taskIdCandidate = null;
+      if (requestId.startsWith('req_task_')) {
+        const stripped = requestId.slice('req_task_'.length);
+        taskIdCandidate = stripped.startsWith('task_') ? stripped : `task_${stripped}`;
+      } else if (requestId.startsWith('task_')) {
+        taskIdCandidate = requestId;
+      }
       if (taskIdCandidate) {
         const task = this.mailbox.getTask(taskIdCandidate, false);
         if (task) {
@@ -197,21 +203,51 @@ export class DesktopAgentWorker extends EventEmitter {
       return { handled: false, requestId, error: 'WRONG_AGENT', expected: this.agentId, actual: request.toAgent };
     }
 
+    // Acquire durable claim atomically across processes before invoking model/UI
+    let claimResult = null;
+    if (this.mailbox?.claimRequest) {
+      claimResult = this.mailbox.claimRequest({
+        requestId,
+        agentId: this.agentId,
+        workerId: this.workerId,
+        leaseMs: this.leaseRefreshMs ? this.leaseRefreshMs * 4 : 30000
+      });
+      if (!claimResult || !claimResult.claimed) {
+        return {
+          handled: false,
+          requestId,
+          error: 'CLAIM_DENIED',
+          reason: claimResult?.error || 'ALREADY_CLAIMED_BY_ANOTHER_WORKER'
+        };
+      }
+      if (claimResult.attemptId) request.attemptId = claimResult.attemptId;
+      if (claimResult.epoch) request.epoch = claimResult.epoch;
+    }
+
     this.status = DesktopAgentWorkerStatus.DELIVERING;
     this.stats.received++;
     const t0 = Date.now();
     this._trace(requestId, LifecycleStage.TASK_CLAIMED, { status: request.status }, request.taskId);
     this.emit('delivering', { requestId });
 
-    // Keep the task lease fresh while a long real model turn is in progress so
+    // Keep the task & request lease fresh while a long real model turn is in progress so
     // the task manager does not reclaim/re-deliver the work underneath us.
     let leaseTimer = null;
-    if (request.taskId && this.mailbox?.tasks?.touchTask) {
-      leaseTimer = setInterval(() => {
-        try { this.mailbox.tasks.touchTask({ taskId: request.taskId, agentId: this.agentId }); } catch {}
-      }, this.leaseRefreshMs);
-      if (leaseTimer.unref) leaseTimer.unref();
-    }
+    leaseTimer = setInterval(() => {
+      try {
+        if (request.taskId && this.mailbox?.tasks?.touchTask) {
+          this.mailbox.tasks.touchTask({ taskId: request.taskId, agentId: this.agentId });
+        }
+        if (this.mailbox?.touchRequest) {
+          this.mailbox.touchRequest({
+            requestId,
+            workerId: this.workerId,
+            leaseMs: this.leaseRefreshMs ? this.leaseRefreshMs * 4 : 30000
+          });
+        }
+      } catch {}
+    }, this.leaseRefreshMs);
+    if (leaseTimer.unref) leaseTimer.unref();
 
     try {
       this.status = DesktopAgentWorkerStatus.PROCESSING;
@@ -300,10 +336,26 @@ export class DesktopAgentWorker extends EventEmitter {
       const hasResponse = Boolean(result.success) && typeof result.response === 'string' && result.response.trim().length > 0;
       if (hasResponse) {
         this._trace(requestId, LifecycleStage.PROVIDER_RESPONSE_COMPLETED, { status: result.status, latencyMs: result.latencyMs }, request.taskId);
-        this._settle(request, { status: 'completed', result: result.response });
+        this._settle(request, {
+          status: 'completed',
+          result: result.response,
+          completionConfidence: result.completionConfidence || null,
+          observedSignals: result.observedSignals || null,
+          stableTicks: result.stableTicks || null,
+          graceRecheck: result.graceRecheck || null
+        });
         this._recordDelivered(requestId);
         this.stats.delivered++;
-        const payload = { requestId, response: result.response, latencyMs: Date.now() - t0, status: result.status };
+        const payload = {
+          requestId,
+          response: result.response,
+          latencyMs: Date.now() - t0,
+          status: result.status,
+          completionConfidence: result.completionConfidence || null,
+          observedSignals: result.observedSignals || null,
+          stableTicks: result.stableTicks || null,
+          graceRecheck: result.graceRecheck || null
+        };
         this.emit('delivered', payload);
         return { handled: true, ...payload };
       }
@@ -330,14 +382,20 @@ export class DesktopAgentWorker extends EventEmitter {
     }
   }
 
-  _settle(request, { status, result = null, error = null }) {
+  _settle(request, { status, result = null, error = null, completionConfidence = null, observedSignals = null, stableTicks = null, graceRecheck = null }) {
     if (request.taskId) {
       return this.mailbox.submitTaskResult({
         taskId: request.taskId,
         agentId: this.agentId,
         status,
         result,
-        error
+        error,
+        attemptId: request.attemptId || null,
+        epoch: request.epoch || null,
+        completionConfidence,
+        observedSignals,
+        stableTicks,
+        graceRecheck
       });
     }
     return this.mailbox.answerRequest({
@@ -345,7 +403,13 @@ export class DesktopAgentWorker extends EventEmitter {
       agentId: this.agentId,
       response: result,
       status,
-      error
+      error,
+      attemptId: request.attemptId || null,
+      epoch: request.epoch || null,
+      completionConfidence,
+      observedSignals,
+      stableTicks,
+      graceRecheck
     });
   }
 

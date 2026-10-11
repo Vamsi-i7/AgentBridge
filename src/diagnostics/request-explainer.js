@@ -1,3 +1,5 @@
+import { RequestTracer } from './request-tracer.js';
+
 /**
  * RequestExplainer:
  * Deep observability and forensic explanation for any Agent Bridge request.
@@ -12,6 +14,7 @@ export class RequestExplainer {
       this.logger = auditLoggerOrDb;
       this.db = auditLoggerOrDb?.db || null;
     }
+    this.tracer = this.db ? new RequestTracer({ db: this.db }) : null;
   }
 
   explainRequest(requestId, caller = null) {
@@ -207,7 +210,9 @@ export class RequestExplainer {
       })),
       effectsCount: effects.length,
       quarantinedCount: quarantined.length,
-      timeline
+      timeline,
+      ledger: this.tracer?.getLedger(requestId) || null,
+      formattedLedger: this.tracer && this.tracer.getLedger(requestId) ? this.tracer.formatLedgerText(this.tracer.getLedger(requestId)) : null
     };
   }
 }

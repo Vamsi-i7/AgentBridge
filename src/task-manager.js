@@ -355,6 +355,62 @@ export class TaskManager extends EventEmitter {
     return claimedTask;
   }
 
+  claimTask(taskId, agentId) {
+    if (this.attempts?.recoverExpiredAttempts) {
+      this.attempts.recoverExpiredAttempts();
+    }
+    this.recoverExpiredTasks(agentId);
+
+    const now = new Date().toISOString();
+    let row = null;
+
+    runInImmediateTx(this.db, () => {
+      row = this.db.prepare(`
+        SELECT id, title, instructions, from_agent, to_agent, priority, context
+        FROM tasks
+        WHERE id = ? AND (to_agent = ? OR to_agent IS NULL) AND status = 'pending'
+      `).get(taskId, agentId);
+
+      if (!row) return;
+
+      const update = this.db.prepare(`
+        UPDATE tasks
+        SET status = 'claimed', to_agent = ?, started_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'pending'
+      `).run(agentId, now, now, row.id);
+
+      if (update.changes === 0) {
+        row = null;
+      }
+    });
+
+    if (!row) return null;
+
+    this.logger?.log({
+      agentId,
+      action: 'claim_task',
+      status: 'success',
+      details: { taskId: row.id, title: row.title }
+    });
+
+    const claimedTask = this.getTask(row.id, false);
+    if (this.attempts) {
+      try {
+        const att = this.attempts.createAttempt({
+          taskId: row.id,
+          agentId,
+          routeId: 'claimed_task'
+        });
+        this.attempts.acquireAttempt(att.attemptId, agentId);
+        claimedTask.attemptId = att.attemptId;
+        claimedTask.epoch = att.epoch;
+        claimedTask.nonce = att.nonce;
+      } catch {}
+    }
+    this.emit('taskClaimed', claimedTask);
+    return claimedTask;
+  }
+
   recoverExpiredTasks(agentId = null) {
     const params = [];
     let query = `SELECT * FROM tasks WHERE status IN ('claimed', 'in_progress') AND started_at IS NOT NULL`;
@@ -526,12 +582,15 @@ export class TaskManager extends EventEmitter {
           throw new Error(`Task '${taskId}' not found.`);
         }
 
-        // Terminal state protection: if the task is already completed, it cannot be
+        // Terminal state protection: if the task is already completed or cancelled, it cannot be
         // mutated, downgraded to failed, or overwritten by a stale attempt.
-        if (task.status === 'completed') {
+        if (task.status === 'completed' || task.status === 'cancelled') {
           const serializedResult = (result !== null && typeof result === 'object') ? JSON.stringify(result) : result;
           // If idempotent duplicate completion, return cleanly without changing terminal state
-          if (status === 'completed' && (task.result === serializedResult || serializedResult === null)) {
+          if (task.status === 'completed' && status === 'completed' && (task.result === serializedResult || serializedResult === null)) {
+            return;
+          }
+          if (task.status === 'cancelled' && status === 'cancelled') {
             return;
           }
           // Stale attempt or late failure/cancellation: quarantine payload if attempts ledger exists
@@ -542,7 +601,7 @@ export class TaskManager extends EventEmitter {
                 requestId: task.parent_task_id || taskId,
                 epoch: epoch || 0,
                 payload: result || error,
-                reason: `Stale ${status} submitted after task was already marked completed`
+                reason: `Stale ${status} submitted after task was already marked ${task.status}`
               });
             } catch {}
           }
@@ -560,41 +619,59 @@ export class TaskManager extends EventEmitter {
           return;
         }
 
-        // Fencing invariant: validate attempt if attemptId or epoch provided
+        // Fencing invariant: validate attempt fencing against authoritative epoch ledger
+        const epochRow = this.db.prepare(`
+          SELECT current_epoch, active_attempt_id FROM task_epochs WHERE task_id = ?
+        `).get(taskId);
+
         if (attemptId && (epoch === null || epoch === undefined)) {
           throw new Error(`Fencing Error: epoch token is required when attemptId is provided for task '${taskId}'.`);
         }
-        if ((epoch !== null && epoch !== undefined) && this.attempts) {
-          if (attemptId) {
+
+        if (epochRow && epoch !== null && epoch !== undefined && Number(epoch) !== epochRow.current_epoch) {
+          const err = new Error(
+            `FENCED_ATTEMPT_ERROR: Stale epoch ${epoch} for task '${taskId}'. Current epoch is ${epochRow.current_epoch}. Execution blocked.`
+          );
+          err.code = 'FENCED_ATTEMPT_ERROR';
+          quarantinePayload = {
+            attemptId: attemptId || `stale_epoch_${epoch}`,
+            requestId: task.parent_task_id || taskId,
+            epoch: Number(epoch) || 0,
+            payload: result || error,
+            reason: err.message
+          };
+          throw err;
+        }
+
+        if (epochRow && attemptId && attemptId !== epochRow.active_attempt_id) {
+          const err = new Error(
+            `FENCED_ATTEMPT_ERROR: Attempt '${attemptId}' is not the active attempt for task '${taskId}' (active is '${epochRow.active_attempt_id}').`
+          );
+          err.code = 'FENCED_ATTEMPT_ERROR';
+          quarantinePayload = {
+            attemptId,
+            requestId: task.parent_task_id || taskId,
+            epoch: Number(epoch) || 0,
+            payload: result || error,
+            reason: err.message
+          };
+          throw err;
+        }
+
+        if (this.attempts && (epoch !== null && epoch !== undefined)) {
+          const effectiveAttemptId = attemptId || epochRow?.active_attempt_id;
+          if (effectiveAttemptId) {
             try {
-              this.attempts.validateFencing({ taskId, attemptId, epoch, agentId });
+              this.attempts.validateFencing({ taskId, attemptId: effectiveAttemptId, epoch: Number(epoch), agentId });
             } catch (fencingErr) {
               quarantinePayload = {
-                attemptId,
+                attemptId: effectiveAttemptId,
                 requestId: task.parent_task_id || taskId,
                 epoch: Number(epoch) || 0,
                 payload: result || error,
                 reason: fencingErr.message
               };
               throw fencingErr;
-            }
-          } else {
-            const epochRow = this.db.prepare(`
-              SELECT current_epoch, active_attempt_id FROM task_epochs WHERE task_id = ?
-            `).get(taskId);
-            if (epochRow && epoch !== epochRow.current_epoch) {
-              const err = new Error(
-                `FENCED_ATTEMPT_ERROR: Stale epoch ${epoch} for task '${taskId}'. Current epoch is ${epochRow.current_epoch}. Execution blocked.`
-              );
-              err.code = 'FENCED_ATTEMPT_ERROR';
-              quarantinePayload = {
-                attemptId: `stale_epoch_${epoch}`,
-                requestId: task.parent_task_id || taskId,
-                epoch: Number(epoch) || 0,
-                payload: result || error,
-                reason: err.message
-              };
-              throw err;
             }
           }
         }
@@ -641,24 +718,11 @@ export class TaskManager extends EventEmitter {
 
         stmt.run(status, serializedResult, error, now, startedAt, completedAt, taskId);
 
-        if (this.attempts) {
-          if (attemptId && epoch) {
-            if (status === 'completed') {
-              this.attempts.completeAttempt({ attemptId, epoch, result: serializedResult });
-            } else if (['failed', 'cancelled'].includes(status)) {
-              this.attempts.failAttempt({ attemptId, epoch, error: error || status });
-            }
-          } else {
-            const activeAtt = this.attempts.getActiveAttemptForTask(taskId);
-            if (activeAtt) {
-              try {
-                if (status === 'completed') {
-                  this.attempts.completeAttempt({ attemptId: activeAtt.attemptId, epoch: activeAtt.epoch, result: serializedResult });
-                } else if (['failed', 'cancelled'].includes(status)) {
-                  this.attempts.failAttempt({ attemptId: activeAtt.attemptId, epoch: activeAtt.epoch, error: error || status });
-                }
-              } catch {}
-            }
+        if (this.attempts && attemptId && epoch) {
+          if (status === 'completed') {
+            this.attempts.completeAttempt({ attemptId, epoch, result: serializedResult });
+          } else if (['failed', 'cancelled'].includes(status)) {
+            this.attempts.failAttempt({ attemptId, epoch, error: error || status });
           }
         }
 
@@ -695,8 +759,8 @@ export class TaskManager extends EventEmitter {
     const task = this.db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(taskId);
     if (!task) throw new Error(`Task '${taskId}' not found.`);
 
-    // If task is already completed, do not allow failure to overwrite it
-    if (task.status === 'completed') {
+    // If task is already completed, cancelled, or failed, do not allow failure to overwrite it or retry
+    if (['completed', 'cancelled', 'failed'].includes(task.status)) {
       return this.getTask(taskId, false);
     }
 
@@ -724,7 +788,7 @@ export class TaskManager extends EventEmitter {
       this.db.prepare(`
         UPDATE tasks
         SET status = 'pending', retry_count = ?, error = ?, updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')
       `).run(retryCount, error, now, taskId);
 
       this.logger?.log({

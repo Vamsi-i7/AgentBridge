@@ -27,29 +27,45 @@ export class PermissionGuard {
     this.agentPolicies = {
       'chatgpt-desktop': {
         allowedPermissions: ['READ', 'SEARCH', 'WRITE', 'CREATE', 'EDIT', 'DELETE', 'EXECUTE', 'GIT_READ', 'GIT_WRITE', 'PUSH', 'MESSAGE', 'DELEGATE'],
-        requiresHumanApproval: ['DESTRUCTIVE', 'MERGE', 'NETWORK']
+        requiresHumanApproval: ['DESTRUCTIVE', 'MERGE', 'NETWORK'],
+        toolProfile: 'communication'
       },
       'claude-desktop': {
         allowedPermissions: ['READ', 'SEARCH', 'WRITE', 'CREATE', 'EDIT', 'DELETE', 'EXECUTE', 'GIT_READ', 'GIT_WRITE', 'PUSH', 'MESSAGE', 'DELEGATE'],
-        requiresHumanApproval: ['DESTRUCTIVE', 'MERGE', 'NETWORK']
+        requiresHumanApproval: ['DESTRUCTIVE', 'MERGE', 'NETWORK'],
+        toolProfile: 'communication'
       },
       'antigravity-ide': {
         allowedPermissions: ['READ', 'SEARCH', 'WRITE', 'CREATE', 'EDIT', 'DELETE', 'EXECUTE', 'GIT_READ', 'GIT_WRITE', 'PUSH', 'MESSAGE', 'DELEGATE'],
-        requiresHumanApproval: ['DESTRUCTIVE', 'MERGE']
+        requiresHumanApproval: ['DESTRUCTIVE', 'MERGE'],
+        toolProfile: 'communication'
       },
       'gemini': {
         allowedPermissions: ['READ', 'SEARCH', 'WRITE', 'CREATE', 'EDIT', 'DELETE', 'EXECUTE', 'GIT_READ', 'GIT_WRITE', 'PUSH', 'MESSAGE', 'DELEGATE'],
-        requiresHumanApproval: ['DESTRUCTIVE', 'MERGE']
+        requiresHumanApproval: ['DESTRUCTIVE', 'MERGE'],
+        toolProfile: 'communication'
       },
       'freebuff': {
         allowedPermissions: ['READ', 'SEARCH', 'WRITE', 'CREATE', 'EDIT', 'DELETE', 'EXECUTE', 'GIT_READ', 'GIT_WRITE', 'PUSH', 'MESSAGE', 'DELEGATE'],
-        requiresHumanApproval: ['DESTRUCTIVE', 'MERGE']
+        requiresHumanApproval: ['DESTRUCTIVE', 'MERGE'],
+        toolProfile: 'communication'
       },
       'system': {
         allowedPermissions: ['READ', 'SEARCH', 'WRITE', 'CREATE', 'EDIT', 'DELETE', 'EXECUTE', 'GIT_READ', 'GIT_WRITE', 'MESSAGE', 'DELEGATE', 'DESTRUCTIVE', 'PUSH'],
-        requiresHumanApproval: []
+        requiresHumanApproval: [],
+        toolProfile: 'all'
       }
     };
+  }
+
+  getAgentToolProfile(agentId) {
+    if (process.env.AGENT_BRIDGE_TOOL_PROFILE) {
+      return process.env.AGENT_BRIDGE_TOOL_PROFILE.toLowerCase();
+    }
+    const check = this.validateAgent(agentId);
+    if (!check.allowed) return 'communication';
+    const policy = this.agentPolicies[check.agentId];
+    return policy?.toolProfile || 'communication';
   }
 
   validateAgent(agentId) {

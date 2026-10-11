@@ -23,7 +23,7 @@ export function measureToolProfiles(options = {}) {
   const baselineSerialized = JSON.stringify(allDefs);
   const baselineBytes = Buffer.byteLength(baselineSerialized, 'utf8');
 
-  const profiles = ['all', 'developer', 'collaborator', 'minimal'];
+  const profiles = ['all', 'developer', 'collaborator', 'minimal', 'skills'];
   const results = {};
 
   for (const prof of profiles) {

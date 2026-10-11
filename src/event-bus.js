@@ -124,6 +124,10 @@ export class EventBus extends EventEmitter {
     try {
       this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN delivery_acknowledged_at TEXT;`);
     } catch {}
+
+    try {
+      this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN completion_evidence TEXT;`);
+    } catch {}
   }
 
   /**
@@ -500,14 +504,15 @@ export class EventBus extends EventEmitter {
     try {
       const row = this.db.prepare(`SELECT * FROM bridge_requests WHERE request_id = ?`).get(requestId);
       if (!row) return null;
-      if (row.status !== 'completed' && row.status !== 'failed') return null;
+      if (row.status !== 'completed' && row.status !== 'failed' && row.status !== 'cancelled') return null;
       return {
         requestId: row.request_id,
         conversationId: row.conversation_id,
         status: row.status,
         response: row.response,
         error: row.error,
-        completedAt: row.completed_at
+        completedAt: row.completed_at,
+        completionEvidence: row.completion_evidence || null
       };
     } catch {
       return null;
@@ -563,6 +568,18 @@ export class EventBus extends EventEmitter {
       : (reqIdOrOpts || {});
     const { requestId, agentId = null, taskId = null, attemptId = null, routeId = null, timeoutMs = 30000 } = opts;
     if (!requestId) throw new Error('requestId is required to wait for response');
+
+    if (this.isClosed) {
+      const closeErr = new Error('EVENT_BUS_CLOSED: Event bus was closed before response was received');
+      closeErr.code = 'EVENT_BUS_CLOSED';
+      return {
+        requestId,
+        status: 'failed',
+        response: null,
+        error: closeErr.message,
+        code: 'EVENT_BUS_CLOSED'
+      };
+    }
 
     this.ensureWatcherStarted();
 

@@ -27,6 +27,8 @@ import crypto from 'node:crypto';
 
 export const ArtifactTransferStatus = Object.freeze({
   STORED: 'STORED',
+  TRANSFERRED: 'TRANSFERRED',
+  DISPLAYABLE: 'DISPLAYABLE',
   EXPIRED: 'EXPIRED',
   REJECTED: 'REJECTED',
   MISSING: 'MISSING'
@@ -115,6 +117,7 @@ export class ArtifactStore {
     this.maxBytes = Number.isFinite(options.maxBytes) ? options.maxBytes : DEFAULT_MAX_BYTES;
     this.defaultTtlMs = options.defaultTtlMs === undefined ? 24 * 60 * 60 * 1000 : options.defaultTtlMs;
     this.allowedMime = options.allowedMime || DEFAULT_ALLOWED_MIME;
+    this.uploadSessions = new Map();
 
     if (this.db) this.initTables();
     this._ensureRoot();
@@ -592,6 +595,338 @@ export class ArtifactStore {
     };
   }
 
+  /** Transition artifact status to TRANSFERRED upon verified recipient receipt. */
+  markTransferred(artifactId, { agentId, transferredTo = null } = {}) {
+    const row = this._row(artifactId);
+    this._authorize(row, agentId);
+    this.db.prepare(`
+      UPDATE bridge_artifacts
+      SET transfer_status = ?
+      WHERE artifact_id = ?
+    `).run(ArtifactTransferStatus.TRANSFERRED, artifactId);
+
+    this.logger?.log?.({
+      agentId,
+      action: 'artifact_transferred',
+      status: 'success',
+      details: { artifactId, transferredTo }
+    });
+    return this.getMetadata(artifactId, { agentId });
+  }
+
+  /** Mark an artifact as DISPLAYABLE in desktop UI / chat. */
+  markDisplayable(artifactId, { agentId, displayContext = null } = {}) {
+    const row = this._row(artifactId);
+    this._authorize(row, agentId);
+    this.db.prepare(`
+      UPDATE bridge_artifacts
+      SET transfer_status = ?
+      WHERE artifact_id = ?
+    `).run(ArtifactTransferStatus.DISPLAYABLE, artifactId);
+
+    this.logger?.log?.({
+      agentId,
+      action: 'artifact_displayable',
+      status: 'success',
+      details: { artifactId, displayContext }
+    });
+    return this.getMetadata(artifactId, { agentId });
+  }
+
+  /** Check whether an artifact is displayable in desktop chat / UI. */
+  isDisplayable(artifactId, { agentId } = {}) {
+    const meta = this.getMetadata(artifactId, { agentId });
+    const isExplicitlyDisplayable = meta.transfer_status === ArtifactTransferStatus.DISPLAYABLE;
+    const isDisplayableMediaType = ['image', 'video', 'text'].includes(meta.media_type) || ['image', 'video', 'text'].includes(meta.mediaType);
+    return {
+      artifactId,
+      displayable: isExplicitlyDisplayable || isDisplayableMediaType,
+      mediaType: meta.mediaType || meta.media_type,
+      mimeType: meta.mimeType || meta.mime_type,
+      transferStatus: meta.transfer_status,
+      reason: isExplicitlyDisplayable ? 'explicitly_marked_displayable' : (isDisplayableMediaType ? 'displayable_media_type' : 'binary_requires_external_viewer')
+    };
+  }
+
+  /**
+   * Initialize a chunked upload session for large binary artifacts (> 8 MiB).
+   */
+  initUploadSession({
+    agentId,
+    filename = null,
+    mimeType = null,
+    totalBytes = null,
+    ttlMs = undefined,
+    authorizedAgents = [],
+    metadata = null,
+    taskId = null,
+    attemptId = null,
+    requestId = null
+  }) {
+    if (!agentId) throw new ArtifactError('agentId is required to start an upload session', 'ARTIFACT_NO_AGENT');
+    if (totalBytes && totalBytes > this.maxBytes) {
+      throw new ArtifactError(`Declared totalBytes (${totalBytes}) exceeds max limit (${this.maxBytes})`, 'ARTIFACT_TOO_LARGE');
+    }
+
+    const uploadId = `upl_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+    const stagingPath = this._assertContained(path.join(this.root, `${uploadId}.staging`));
+
+    const fd = fs.openSync(stagingPath, 'wx', 0o600);
+    fs.closeSync(fd);
+
+    const session = {
+      uploadId,
+      agentId,
+      filename: sanitizeFilename(filename),
+      mimeType,
+      totalBytes,
+      ttlMs,
+      authorizedAgents,
+      metadata,
+      taskId,
+      attemptId,
+      requestId,
+      stagingPath,
+      bytesWritten: 0,
+      hasher: crypto.createHash('sha256'),
+      firstChunk: null,
+      createdAt: Date.now()
+    };
+    this.uploadSessions.set(uploadId, session);
+
+    return {
+      uploadId,
+      stagingPath: path.basename(stagingPath),
+      maxBytes: this.maxBytes,
+      maxChunkBytes: MAX_INLINE_BYTES
+    };
+  }
+
+  /**
+   * Write or append a chunk to an active upload session with SHA-256 integrity and resumability.
+   */
+  writeChunk({
+    uploadId,
+    agentId,
+    chunkBytes = null,
+    chunkBase64 = null,
+    offset = null,
+    isLastChunk = false,
+    chunkSha256 = null
+  }) {
+    const session = this.uploadSessions.get(uploadId);
+    if (!session) {
+      throw new ArtifactError(`Upload session '${uploadId}' not found`, 'ARTIFACT_UPLOAD_NOT_FOUND');
+    }
+    if (session.agentId !== agentId) {
+      throw new ArtifactError('Unauthorized upload session access', 'ARTIFACT_UNAUTHORIZED');
+    }
+
+    const chunk = chunkBytes ? (Buffer.isBuffer(chunkBytes) ? chunkBytes : Buffer.from(chunkBytes))
+      : (chunkBase64 ? Buffer.from(chunkBase64, 'base64') : null);
+    if (!chunk || chunk.length === 0) {
+      throw new ArtifactError('Chunk data cannot be empty', 'ARTIFACT_EMPTY_CHUNK');
+    }
+
+    if (chunk.length > MAX_INLINE_BYTES) {
+      throw new ArtifactError(`Chunk size (${chunk.length}) exceeds max chunk limit (${MAX_INLINE_BYTES})`, 'ARTIFACT_CHUNK_TOO_LARGE');
+    }
+
+    if (session.bytesWritten + chunk.length > this.maxBytes) {
+      throw new ArtifactError('Total upload exceeds max size limit', 'ARTIFACT_TOO_LARGE');
+    }
+
+    if (chunkSha256) {
+      const actualChunkSha = crypto.createHash('sha256').update(chunk).digest('hex');
+      if (actualChunkSha !== chunkSha256) {
+        throw new ArtifactError('Chunk SHA-256 integrity verification failed', 'ARTIFACT_CHUNK_CORRUPT');
+      }
+    }
+
+    const writePos = offset !== null ? parseInt(offset, 10) : session.bytesWritten;
+    if (offset !== null && writePos > session.bytesWritten) {
+      throw new ArtifactError(`Offset gap: expected <= ${session.bytesWritten}, got ${writePos}`, 'ARTIFACT_OFFSET_MISMATCH');
+    }
+
+    const fd = fs.openSync(session.stagingPath, 'r+');
+    try {
+      fs.writeSync(fd, chunk, 0, chunk.length, writePos);
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    if (writePos === session.bytesWritten) {
+      session.hasher.update(chunk);
+      session.bytesWritten += chunk.length;
+      if (!session.firstChunk) {
+        session.firstChunk = Buffer.from(chunk.subarray(0, 16));
+      }
+    }
+
+    return {
+      uploadId,
+      offset: writePos,
+      bytesWritten: chunk.length,
+      totalBytesWritten: session.bytesWritten,
+      eof: isLastChunk
+    };
+  }
+
+  /**
+   * Finalize chunked upload, verifying overall SHA-256 and atomically registering the artifact.
+   */
+  finalizeUpload({ uploadId, agentId, expectedSha256 = null }) {
+    const session = this.uploadSessions.get(uploadId);
+    if (!session) {
+      throw new ArtifactError(`Upload session '${uploadId}' not found`, 'ARTIFACT_UPLOAD_NOT_FOUND');
+    }
+    if (session.agentId !== agentId) {
+      throw new ArtifactError('Unauthorized upload session access', 'ARTIFACT_UNAUTHORIZED');
+    }
+
+    if (session.bytesWritten === 0) {
+      try { fs.rmSync(session.stagingPath, { force: true }); } catch {}
+      this.uploadSessions.delete(uploadId);
+      throw new ArtifactError('Refusing to finalize empty artifact', 'ARTIFACT_EMPTY');
+    }
+
+    if (session.totalBytes && session.bytesWritten !== session.totalBytes) {
+      throw new ArtifactError(`Uploaded bytes (${session.bytesWritten}) does not match expected total (${session.totalBytes})`, 'ARTIFACT_SIZE_MISMATCH');
+    }
+
+    const overallSha256 = session.hasher.digest('hex');
+    if (expectedSha256 && expectedSha256 !== overallSha256) {
+      try { fs.rmSync(session.stagingPath, { force: true }); } catch {}
+      this.uploadSessions.delete(uploadId);
+      throw new ArtifactError(`Artifact SHA-256 integrity verification failed: expected ${expectedSha256}, got ${overallSha256}`, 'ARTIFACT_INTEGRITY_FAILURE');
+    }
+
+    const detected = session.firstChunk ? detectMimeType(session.firstChunk) : null;
+    const effectiveMime = detected || session.mimeType || 'application/octet-stream';
+    if (!this.allowedMime.has(effectiveMime)) {
+      try { fs.rmSync(session.stagingPath, { force: true }); } catch {}
+      this.uploadSessions.delete(uploadId);
+      throw new ArtifactError(`MIME type '${effectiveMime}' is not permitted`, 'ARTIFACT_MIME_UNSUPPORTED');
+    }
+
+    const artifactId = `art_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+    const ext = EXT_BY_MIME[effectiveMime] || null;
+    const storagePath = this._storagePath(artifactId, ext);
+
+    fs.renameSync(session.stagingPath, storagePath);
+    this.uploadSessions.delete(uploadId);
+
+    const now = new Date();
+    const ttl = session.ttlMs === undefined ? this.defaultTtlMs : session.ttlMs;
+    const expiresAt = (ttl && Number.isFinite(ttl) && ttl > 0)
+      ? new Date(now.getTime() + ttl).toISOString()
+      : null;
+
+    let verifiedStakeholders = [agentId];
+    if (session.taskId) {
+      try {
+        const tRow = this.db.prepare('SELECT creator, from_agent FROM tasks WHERE id = ?').get(session.taskId);
+        if (tRow?.creator) verifiedStakeholders.push(tRow.creator);
+        if (tRow?.from_agent) verifiedStakeholders.push(tRow.from_agent);
+      } catch {}
+    }
+    const authorized = Array.from(new Set([
+      ...verifiedStakeholders,
+      ...(Array.isArray(session.authorizedAgents) ? session.authorizedAgents : [])
+    ].filter(Boolean)));
+
+    this.db.prepare(`
+      INSERT INTO bridge_artifacts (
+        artifact_id, task_id, attempt_id, agent_id, mime_type, media_type, filename,
+        size_bytes, sha256, storage_backend, retrieval_method, storage_path,
+        authorized_agents, transfer_status, created_at, expires_at, metadata
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      artifactId,
+      session.taskId,
+      session.attemptId,
+      agentId,
+      effectiveMime,
+      mediaTypeOf(effectiveMime),
+      session.filename,
+      session.bytesWritten,
+      overallSha256,
+      'local-filesystem',
+      'bridge_artifact_read',
+      path.relative(this.root, storagePath),
+      JSON.stringify(authorized),
+      ArtifactTransferStatus.STORED,
+      now.toISOString(),
+      expiresAt,
+      session.metadata ? JSON.stringify(session.metadata) : null
+    );
+
+    this.logger?.log?.({
+      agentId,
+      action: 'artifact_store_streamed',
+      status: 'success',
+      details: { artifactId, sizeBytes: session.bytesWritten, sha256: overallSha256 }
+    });
+
+    return this.getMetadata(artifactId, { agentId });
+  }
+
+  /**
+   * Stream a readable stream directly to storage and register the artifact.
+   */
+  async streamPut(readableStream, options = {}) {
+    const { agentId } = options;
+    const sessionInfo = this.initUploadSession(options);
+    const { uploadId } = sessionInfo;
+
+    return new Promise((resolve, reject) => {
+      readableStream.on('data', (chunk) => {
+        try {
+          this.writeChunk({ uploadId, agentId, chunkBytes: chunk });
+        } catch (err) {
+          readableStream.destroy();
+          reject(err);
+        }
+      });
+      readableStream.on('error', (err) => {
+        const session = this.uploadSessions.get(uploadId);
+        if (session) {
+          try { fs.rmSync(session.stagingPath, { force: true }); } catch {}
+          this.uploadSessions.delete(uploadId);
+        }
+        reject(err);
+      });
+      readableStream.on('end', () => {
+        try {
+          const res = this.finalizeUpload({ uploadId, agentId, expectedSha256: options.expectedSha256 });
+          resolve(res);
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+  }
+
+  /**
+   * Create an fs.ReadStream for streaming reads of an artifact.
+   */
+  createReadStream(artifactId, { agentId, start = 0, end = null } = {}) {
+    const row = this._row(artifactId);
+    this._authorize(row, agentId);
+    if (this._expired(row)) {
+      throw new ArtifactError(`Artifact '${artifactId}' has expired`, 'ARTIFACT_EXPIRED', ArtifactTransferStatus.EXPIRED);
+    }
+    const storagePath = this._assertContained(path.join(this.root, row.storage_path));
+    if (!fs.existsSync(storagePath)) {
+      throw new ArtifactError(`Artifact '${artifactId}' bytes are missing`, 'ARTIFACT_BYTES_MISSING', ArtifactTransferStatus.MISSING);
+    }
+    const real = this._assertContainedReal(fs.realpathSync(storagePath));
+    const streamOptions = { flags: 'r' };
+    if (Number.isFinite(start)) streamOptions.start = start;
+    if (Number.isFinite(end)) streamOptions.end = end;
+    return fs.createReadStream(real, streamOptions);
+  }
+
   /** Delete expired artifact bytes and mark their metadata expired. */
   cleanupExpired(now = Date.now(), { agentId = null, isPrivileged = false } = {}) {
     let rows = [];
@@ -599,12 +934,12 @@ export class ArtifactStore {
       if (agentId && !isPrivileged && agentId !== 'system') {
         rows = this.db.prepare(`
           SELECT * FROM bridge_artifacts
-          WHERE transfer_status = 'STORED' AND expires_at IS NOT NULL AND expires_at <= ? AND agent_id = ?
+          WHERE transfer_status IN ('STORED', 'TRANSFERRED', 'DISPLAYABLE') AND expires_at IS NOT NULL AND expires_at <= ? AND agent_id = ?
         `).all(new Date(now).toISOString(), agentId);
       } else {
         rows = this.db.prepare(`
           SELECT * FROM bridge_artifacts
-          WHERE transfer_status = 'STORED' AND expires_at IS NOT NULL AND expires_at <= ?
+          WHERE transfer_status IN ('STORED', 'TRANSFERRED', 'DISPLAYABLE') AND expires_at IS NOT NULL AND expires_at <= ?
         `).all(new Date(now).toISOString());
       }
     } catch (err) {
@@ -623,6 +958,22 @@ export class ArtifactStore {
         this.logger?.debug?.(`Failed to clean expired artifact ${row.artifact_id}`, err);
       }
     }
+
+    // Clean orphaned staging files from abandoned uploads older than 1 hour
+    try {
+      const files = fs.readdirSync(this.root);
+      const oneHourAgo = Date.now() - 3600 * 1000;
+      for (const f of files) {
+        if (f.endsWith('.staging')) {
+          const p = path.join(this.root, f);
+          const st = fs.statSync(p);
+          if (st.mtimeMs < oneHourAgo) {
+            fs.rmSync(p, { force: true });
+          }
+        }
+      }
+    } catch {}
+
     return { cleaned };
   }
 

@@ -3,7 +3,7 @@ export { DesktopControlAdapter, AdapterHealth } from './desktop-control-adapter.
 export { ConversationLocator } from './conversation-locator.js';
 export { AXEngine } from './ax-engine.js';
 export { SwiftAXBridge } from './swift-ax-bridge.js';
-export { ResponseObserver, ObserverState } from './response-observer.js';
+export { ResponseObserver, ObserverState, CompletionConfidence } from './response-observer.js';
 export { CdpDesktopAdapter } from './cdp-adapter.js';
 export { BrowserSessionAdapter } from './browser-session-adapter.js';
 export { ChatGptLocalEngineAdapter } from './chatgpt-local-engine.js';

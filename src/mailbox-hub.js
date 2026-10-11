@@ -13,6 +13,7 @@ import { ArtifactStore } from './artifacts/artifact-store.js';
 import { TokenAccountant } from './telemetry/token-accountant.js';
 import { CONFIG } from './config.js';
 import { normalizeAgentId } from './agent-identity.js';
+import { isEffectfulTool } from './effects/effects-ledger.js';
 
 export const TERMINAL_REQUEST_STATES = Object.freeze(new Set([
   'completed',
@@ -51,6 +52,210 @@ export class MailboxHub {
     this.tracer = new RequestTracer(auditLogger);
     if (this.eventBus && !this.eventBus.tracer) {
       this.eventBus.tracer = this.tracer;
+    }
+    this._ensureRequestColumns();
+  }
+
+  _ensureRequestColumns() {
+    if (this.db) {
+      try {
+        const reqCols = this.db.prepare(`PRAGMA table_info(bridge_requests)`).all();
+        const colNames = new Set(reqCols.map(c => c.name));
+        if (!colNames.has('claimed_by')) {
+          this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN claimed_by TEXT;`);
+        }
+        if (!colNames.has('lease_expires_at')) {
+          this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN lease_expires_at TEXT;`);
+        }
+        if (!colNames.has('attempt_id')) {
+          this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN attempt_id TEXT;`);
+        }
+        if (!colNames.has('epoch')) {
+          this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN epoch INTEGER;`);
+        }
+      } catch {}
+    }
+  }
+
+  claimTask(taskId, agentId) {
+    return this.tasks.claimTask(taskId, agentId);
+  }
+
+  claimRequest({ requestId, agentId, workerId = null, leaseMs = 30000 }) {
+    if (!requestId) throw new Error('requestId is required');
+    if (!agentId) throw new Error('agentId is required');
+    const claimerId = workerId || agentId;
+    this._ensureRequestColumns();
+
+    let reqRow = null;
+    try {
+      reqRow = this.db.prepare('SELECT * FROM bridge_requests WHERE request_id = ?').get(requestId);
+    } catch {}
+
+    if (!reqRow) {
+      if (this.tasks) {
+        let taskIdCandidate = null;
+        if (requestId.startsWith('req_task_')) {
+          const stripped = requestId.slice('req_task_'.length);
+          taskIdCandidate = stripped.startsWith('task_') ? stripped : `task_${stripped}`;
+        } else if (requestId.startsWith('task_')) {
+          taskIdCandidate = requestId;
+        }
+        if (taskIdCandidate) {
+          const taskRow = this.tasks.getTask(taskIdCandidate, false);
+          if (taskRow) {
+            try {
+              const claimedTask = this.tasks.claimTask(taskRow.id, agentId);
+              return {
+                claimed: true,
+                requestId,
+                taskId: taskRow.id,
+                attemptId: claimedTask.attemptId,
+                epoch: claimedTask.epoch,
+                claimedBy: claimerId,
+                leaseExpiresAt: claimedTask.leaseExpiresAt || new Date(Date.now() + leaseMs).toISOString()
+              };
+            } catch (tClaimErr) {
+              return { claimed: false, error: tClaimErr.message };
+            }
+          }
+        }
+      }
+      return { claimed: false, error: 'REQUEST_NOT_FOUND' };
+    }
+
+    if (reqRow.to_agent && reqRow.to_agent !== '*' && agentId.toLowerCase() !== reqRow.to_agent.toLowerCase()) {
+      return { claimed: false, error: 'WRONG_AGENT', expected: reqRow.to_agent, actual: agentId };
+    }
+
+    if (TERMINAL_REQUEST_STATES.has(reqRow.status)) {
+      return { claimed: false, error: 'REQUEST_ALREADY_TERMINAL', status: reqRow.status };
+    }
+
+    const now = new Date().toISOString();
+    const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+
+    // Check if currently actively claimed by a DIFFERENT worker with valid lease
+    if (reqRow.status === 'in_progress' || reqRow.status === 'claimed') {
+      if (reqRow.lease_expires_at && reqRow.lease_expires_at > now && reqRow.claimed_by && reqRow.claimed_by !== claimerId) {
+        return {
+          claimed: false,
+          error: 'LEASE_ACTIVE',
+          claimedBy: reqRow.claimed_by,
+          leaseExpiresAt: reqRow.lease_expires_at
+        };
+      }
+    }
+
+    let attemptId = null;
+    let epoch = 1;
+
+    // If backing task exists, integrate with TaskManager attempt tracking
+    if (reqRow.task_id && this.tasks) {
+      try {
+        const claimedTask = this.tasks.claimTask(reqRow.task_id, agentId);
+        if (claimedTask) {
+          attemptId = claimedTask.attemptId || null;
+          epoch = claimedTask.epoch || 1;
+        } else if (this.tasks.attempts) {
+          const att = this.tasks.attempts.createAttempt({
+            taskId: reqRow.task_id,
+            agentId,
+            routeId: 'claim_request'
+          });
+          this.tasks.attempts.acquireAttempt(att.attemptId, agentId);
+          attemptId = att.attemptId;
+          epoch = att.epoch;
+        }
+      } catch {}
+    }
+
+    if (!attemptId) {
+      attemptId = `req_att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      epoch = (reqRow.epoch || 0) + 1;
+    }
+
+    // Atomic conditional update on bridge_requests
+    let updatedRow = null;
+    try {
+      const updateStmt = this.db.prepare(`
+        UPDATE bridge_requests
+        SET status = 'in_progress',
+            claimed_by = ?,
+            lease_expires_at = ?,
+            attempt_id = ?,
+            epoch = ?,
+            updated_at = ?
+        WHERE request_id = ?
+          AND (
+            status = 'pending'
+            OR (status IN ('claimed', 'in_progress') AND (lease_expires_at IS NULL OR lease_expires_at <= ? OR claimed_by = ?))
+          )
+      `);
+      const res = updateStmt.run(claimerId, leaseExpiresAt, attemptId, epoch, now, requestId, now, claimerId);
+      if (res.changes === 0) {
+        return { claimed: false, error: 'CONCURRENT_CLAIM_LOST' };
+      }
+      updatedRow = this.db.prepare('SELECT * FROM bridge_requests WHERE request_id = ?').get(requestId);
+    } catch (err) {
+      return { claimed: false, error: err.message };
+    }
+
+    return {
+      claimed: true,
+      requestId,
+      taskId: reqRow.task_id,
+      attemptId,
+      epoch,
+      claimedBy: claimerId,
+      leaseExpiresAt,
+      request: updatedRow
+    };
+  }
+
+  touchRequest({ requestId, workerId = null, leaseMs = 30000 }) {
+    const now = new Date().toISOString();
+    const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+    try {
+      const stmt = workerId
+        ? this.db.prepare(`
+            UPDATE bridge_requests
+            SET lease_expires_at = ?, updated_at = ?
+            WHERE request_id = ? AND claimed_by = ? AND status IN ('claimed', 'in_progress')
+          `)
+        : this.db.prepare(`
+            UPDATE bridge_requests
+            SET lease_expires_at = ?, updated_at = ?
+            WHERE request_id = ? AND status IN ('claimed', 'in_progress')
+          `);
+      const res = workerId ? stmt.run(leaseExpiresAt, now, requestId, workerId) : stmt.run(leaseExpiresAt, now, requestId);
+      return res.changes > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  recoverExpiredRequests(agentId = null) {
+    const now = new Date().toISOString();
+    try {
+      let stmt;
+      if (agentId) {
+        stmt = this.db.prepare(`
+          UPDATE bridge_requests
+          SET status = 'pending', claimed_by = NULL, lease_expires_at = NULL, updated_at = ?
+          WHERE to_agent = ? AND status IN ('claimed', 'in_progress') AND lease_expires_at IS NOT NULL AND lease_expires_at < ?
+        `);
+        return stmt.run(now, agentId, now);
+      } else {
+        stmt = this.db.prepare(`
+          UPDATE bridge_requests
+          SET status = 'pending', claimed_by = NULL, lease_expires_at = NULL, updated_at = ?
+          WHERE status IN ('claimed', 'in_progress') AND lease_expires_at IS NOT NULL AND lease_expires_at < ?
+        `);
+        return stmt.run(now, now);
+      }
+    } catch {
+      return { changes: 0 };
     }
   }
 
@@ -780,19 +985,30 @@ export class MailboxHub {
     }
 
     // Lifecycle: request + backing task durably created (post-commit).
+    const questionBytes = Buffer.byteLength(question || '', 'utf8');
+    const estTokensIn = Math.ceil(questionBytes / 4);
     this.tracer.mark({
       requestId: reqId,
       stage: LifecycleStage.REQUEST_CREATED,
       taskId: task ? task.id : null,
       agentId: normTo,
-      meta: { fromAgent: normFrom, conversationId: convId, asyncMode }
+      meta: {
+        fromAgent: normFrom,
+        toAgent: normTo,
+        conversationId: convId,
+        asyncMode,
+        bodySizeBytes: questionBytes,
+        tokensIn: estTokensIn,
+        toolSchemaOverheadTokens: 6740
+      }
     });
     if (task) {
       this.tracer.mark({
         requestId: reqId,
         stage: LifecycleStage.TASK_CREATED,
         taskId: task.id,
-        agentId: normTo
+        agentId: normTo,
+        meta: { fromAgent: normFrom, toAgent: normTo, bodySizeBytes: questionBytes }
       });
     }
 
@@ -820,13 +1036,32 @@ export class MailboxHub {
     });
 
     // Lifecycle: the correlated response (or a truthful timeout) reached the caller.
-    this.tracer.mark({
-      requestId: reqId,
-      stage: LifecycleStage.RESPONSE_RETURNED,
-      taskId: task ? task.id : null,
-      agentId: normFrom,
-      meta: { outcome: outcome.status }
-    });
+    if (outcome.status === 'timeout' || outcome.timedOut) {
+      this.tracer.mark({
+        requestId: reqId,
+        stage: LifecycleStage.TIMEOUT,
+        taskId: task ? task.id : null,
+        agentId: normFrom,
+        meta: { outcome: 'timeout', timeoutMs, error: outcome.error }
+      });
+    } else if (outcome.status === 'failed') {
+      this.tracer.mark({
+        requestId: reqId,
+        stage: LifecycleStage.FAILED,
+        taskId: task ? task.id : null,
+        agentId: normFrom,
+        meta: { outcome: 'failed', error: outcome.error }
+      });
+    } else {
+      const respBytes = Buffer.byteLength(outcome.response || '', 'utf8');
+      this.tracer.mark({
+        requestId: reqId,
+        stage: LifecycleStage.RESPONSE_RETURNED,
+        taskId: task ? task.id : null,
+        agentId: normFrom,
+        meta: { outcome: outcome.status, tokensOut: Math.ceil(respBytes / 4), bodySizeBytes: respBytes }
+      });
+    }
 
     if (outcome.status === 'completed') {
       let finalResponse = outcome.response;
@@ -934,9 +1169,72 @@ export class MailboxHub {
    * Atomically updates task, resolves any correlated bridge_requests,
    * emits live response event on event bus, and delivers durable mailbox message.
    */
-  submitTaskResult({ taskId, agentId, status = 'completed', result = null, error = null, attemptId = null, epoch = null }) {
+  submitTaskResult({
+    taskId,
+    agentId,
+    status = 'completed',
+    result = null,
+    error = null,
+    attemptId = null,
+    epoch = null,
+    completionConfidence = null,
+    observedSignals = null,
+    stableTicks = null,
+    graceRecheck = null
+  }) {
     let updated = null;
     let lifecycle = null;
+
+    // Confidence and side-effects gating for tasks
+    if (status === 'completed') {
+      const existingTask = this.tasks?.getTask ? this.tasks.getTask(taskId, false) : null;
+      let ctxObj = null;
+      if (existingTask?.context) {
+        try {
+          ctxObj = typeof existingTask.context === 'string' ? JSON.parse(existingTask.context) : existingTask.context;
+        } catch {}
+      }
+      const hasSideEffects = Boolean(
+        existingTask?.hasSideEffects ||
+        ctxObj?.hasSideEffects ||
+        (ctxObj?.tool && isEffectfulTool(ctxObj.tool)) ||
+        (existingTask?.tool && isEffectfulTool(existingTask.tool))
+      );
+      const reqConfidence = existingTask?.requiredConfidence || ctxObj?.requiredConfidence || (hasSideEffects ? 'INDICATOR_BASED' : null);
+      const effectiveConfidence = completionConfidence || 'EXPLICIT_END_OF_TURN';
+
+      const CONFIDENCE_RANK = {
+        'STABILITY_HEURISTIC': 1,
+        'INDICATOR_BASED': 2,
+        'EXPLICIT_END_OF_TURN': 3
+      };
+
+      if (hasSideEffects && effectiveConfidence === 'STABILITY_HEURISTIC') {
+        const errMsg = 'INSUFFICIENT_COMPLETION_CONFIDENCE: STABILITY_HEURISTIC completions are not accepted for tasks with side effects.';
+        return this.submitTaskResult({
+          taskId,
+          agentId,
+          status: 'failed',
+          error: errMsg,
+          attemptId,
+          epoch
+        });
+      }
+
+      if (reqConfidence && (CONFIDENCE_RANK[effectiveConfidence] || 0) < (CONFIDENCE_RANK[reqConfidence] || 0)) {
+        const errMsg = `INSUFFICIENT_COMPLETION_CONFIDENCE: Task requires '${reqConfidence}' but observed confidence was '${effectiveConfidence}'.`;
+        return this.submitTaskResult({
+          taskId,
+          agentId,
+          status: 'failed',
+          error: errMsg,
+          attemptId,
+          epoch
+        });
+      }
+    }
+
+    const effectiveConfidence = completionConfidence || 'EXPLICIT_END_OF_TURN';
 
     const submitWork = (targetDb, stageEventFn = null) => {
       updated = this.tasks.updateTaskStatus({
@@ -1001,9 +1299,9 @@ export class MailboxHub {
           try {
             targetDb.prepare(`
               UPDATE bridge_requests
-              SET status = ?, response = ?, error = ?, updated_at = ?, completed_at = ?
+              SET status = ?, response = ?, error = ?, updated_at = ?, completed_at = ?, completion_evidence = COALESCE(?, completion_evidence)
               WHERE request_id = ? AND status NOT IN ('completed', 'failed', 'cancelled')
-            `).run(status, resultStr, error, now, now, requestId);
+            `).run(status, resultStr, error, now, now, effectiveConfidence, requestId);
           } catch (updErr) {
             this.logger?.debug?.('Failed to update bridge_requests in submitTaskResult', updErr);
           }
@@ -1030,7 +1328,12 @@ export class MailboxHub {
             executionMetadata: {
               attemptEpoch: epoch || 1,
               correlationTier: attemptId ? 'crypto_nonce' : 'direct_session',
-              originRoute: 'task_mailbox'
+              originRoute: 'task_mailbox',
+              completionConfidence: effectiveConfidence,
+              observedSignals: observedSignals || null,
+              stableTicks: stableTicks || null,
+              graceRecheck: graceRecheck || null,
+              isHeuristic: effectiveConfidence === 'STABILITY_HEURISTIC'
             }
           });
 
@@ -1054,13 +1357,21 @@ export class MailboxHub {
       // RESULT_PERSISTED ordered before WAITER_RESOLVED in same-process traces.
       lifecycle = { requestId, taskId, agentId, status };
       if (requestId) {
+        const respBytes = Buffer.byteLength(resultStr || '', 'utf8');
+        const estTokensOut = Math.ceil(respBytes / 4);
         this.tracer.mark({
           requestId,
           stage: LifecycleStage.RESULT_PERSISTED,
           taskId,
           attemptId,
           agentId,
-          meta: { status }
+          meta: {
+            status,
+            tokensOut: estTokensOut,
+            bodySizeBytes: respBytes,
+            completionType: effectiveConfidence,
+            completionEvidence: observedSignals ? Array.from(observedSignals).join(',') : null
+          }
         });
       }
 
@@ -1081,7 +1392,12 @@ export class MailboxHub {
             payload: {
               snippet,
               status,
-              error: error ? (error.length > 80 ? error.slice(0, 80) + '...' : error) : null
+              error: error ? (error.length > 80 ? error.slice(0, 80) + '...' : error) : null,
+              completionConfidence: effectiveConfidence,
+              isHeuristic: effectiveConfidence === 'STABILITY_HEURISTIC',
+              observedSignals: observedSignals || null,
+              stableTicks: stableTicks || null,
+              graceRecheck: graceRecheck || null
             },
             dedupKey: `resp_ready_${requestId}_${status}`
           });
@@ -1096,7 +1412,12 @@ export class MailboxHub {
             payload: {
               snippet,
               status,
-              error: error ? (error.length > 80 ? error.slice(0, 80) + '...' : error) : null
+              error: error ? (error.length > 80 ? error.slice(0, 80) + '...' : error) : null,
+              completionConfidence: effectiveConfidence,
+              isHeuristic: effectiveConfidence === 'STABILITY_HEURISTIC',
+              observedSignals: observedSignals || null,
+              stableTicks: stableTicks || null,
+              graceRecheck: graceRecheck || null
             },
             dedupKey: `resp_delivered_${requestId}_${status}`
           });
@@ -1112,7 +1433,12 @@ export class MailboxHub {
             payload: {
               snippet,
               status,
-              error: error ? (error.length > 80 ? error.slice(0, 80) + '...' : error) : null
+              error: error ? (error.length > 80 ? error.slice(0, 80) + '...' : error) : null,
+              completionConfidence: effectiveConfidence,
+              isHeuristic: effectiveConfidence === 'STABILITY_HEURISTIC',
+              observedSignals: observedSignals || null,
+              stableTicks: stableTicks || null,
+              graceRecheck: graceRecheck || null
             },
             dedupKey: `task_${status}_${taskId}`
           });
@@ -1167,7 +1493,24 @@ export class MailboxHub {
 
   claimNextTask(agentId) {
     const norm = normalizeAgentId(agentId) || agentId;
-    return this.tasks.claimNextTask(norm);
+    const claimed = this.tasks.claimNextTask(norm);
+    if (claimed && this.tracer) {
+      let reqId = null;
+      if (claimed.context) {
+        try {
+          const ctxObj = typeof claimed.context === 'string' ? JSON.parse(claimed.context) : claimed.context;
+          reqId = ctxObj?.requestId;
+        } catch {}
+      }
+      this.tracer.mark({
+        requestId: reqId || `req_${claimed.id}`,
+        stage: LifecycleStage.TASK_CLAIMED,
+        taskId: claimed.id,
+        agentId: norm,
+        attemptId: claimed.attemptId || null
+      });
+    }
+    return claimed;
   }
 
   failTask({ taskId, agentId, error, allowRetry = true, attemptId = null, epoch = null }) {
@@ -1291,6 +1634,11 @@ export class MailboxHub {
       untrustedData: true,
       quarantined: isQuarantined,
       quarantineReason: art?.quarantineReason || null,
+      completionConfidence: art?.executionMetadata?.completionConfidence || (row.status === 'completed' ? 'EXPLICIT_END_OF_TURN' : null),
+      isHeuristic: Boolean(art?.executionMetadata?.isHeuristic || art?.executionMetadata?.completionConfidence === 'STABILITY_HEURISTIC'),
+      observedSignals: art?.executionMetadata?.observedSignals || null,
+      stableTicks: art?.executionMetadata?.stableTicks ?? null,
+      graceRecheck: art?.executionMetadata?.graceRecheck || null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       completedAt: row.completed_at,
@@ -1328,13 +1676,18 @@ export class MailboxHub {
 
   getPendingRequests(agentId, limit = 10) {
     try {
+      this.recoverExpiredRequests(agentId);
+      const now = new Date().toISOString();
       const rows = this.db.prepare(`
         SELECT request_id, conversation_id, from_agent, to_agent, question, context, task_id, status, created_at
         FROM bridge_requests
-        WHERE to_agent = ? AND status = 'pending'
+        WHERE to_agent = ? AND (
+          status = 'pending'
+          OR (status IN ('claimed', 'in_progress') AND lease_expires_at IS NOT NULL AND lease_expires_at < ?)
+        )
         ORDER BY created_at ASC
         LIMIT ?
-      `).all(agentId, limit);
+      `).all(agentId, now, limit);
       return rows.map(r => ({
         requestId: r.request_id,
         conversationId: r.conversation_id,
@@ -1351,7 +1704,19 @@ export class MailboxHub {
     }
   }
 
-  answerRequest({ requestId, agentId, response, status = 'completed', error = null, attemptId = null, epoch = null }) {
+  answerRequest({
+    requestId,
+    agentId,
+    response,
+    status = 'completed',
+    error = null,
+    attemptId = null,
+    epoch = null,
+    completionConfidence = null,
+    observedSignals = null,
+    stableTicks = null,
+    graceRecheck = null
+  }) {
     if (!requestId) throw new Error('requestId is required');
     if (!agentId) throw new Error('agentId is required');
 
@@ -1431,17 +1796,113 @@ export class MailboxHub {
         result: response,
         error,
         attemptId,
-        epoch
+        epoch,
+        completionConfidence,
+        observedSignals,
+        stableTicks,
+        graceRecheck
       });
     }
 
-    // 3. Fencing validation if attemptId provided
+    const effectiveConfidence = completionConfidence || 'EXPLICIT_END_OF_TURN';
+
+    // Confidence and side-effects gating for direct requests
+    if (status === 'completed') {
+      let reqContext = null;
+      if (reqRow.context) {
+        try {
+          reqContext = typeof reqRow.context === 'string' ? JSON.parse(reqRow.context) : reqRow.context;
+        } catch {}
+      }
+      const hasSideEffects = Boolean(
+        reqContext?.hasSideEffects ||
+        (reqContext?.tool && isEffectfulTool(reqContext.tool))
+      );
+      const reqConfidence = reqContext?.requiredConfidence || (hasSideEffects ? 'INDICATOR_BASED' : null);
+
+      const CONFIDENCE_RANK = {
+        'STABILITY_HEURISTIC': 1,
+        'INDICATOR_BASED': 2,
+        'EXPLICIT_END_OF_TURN': 3
+      };
+
+      if (hasSideEffects && effectiveConfidence === 'STABILITY_HEURISTIC') {
+        const errMsg = 'INSUFFICIENT_COMPLETION_CONFIDENCE: STABILITY_HEURISTIC completions are not accepted for requests with side effects.';
+        return this.answerRequest({
+          requestId,
+          agentId,
+          status: 'failed',
+          error: errMsg,
+          attemptId,
+          epoch
+        });
+      }
+
+      if (reqConfidence && (CONFIDENCE_RANK[effectiveConfidence] || 0) < (CONFIDENCE_RANK[reqConfidence] || 0)) {
+        const errMsg = `INSUFFICIENT_COMPLETION_CONFIDENCE: Request requires '${reqConfidence}' but observed confidence was '${effectiveConfidence}'.`;
+        return this.answerRequest({
+          requestId,
+          agentId,
+          status: 'failed',
+          error: errMsg,
+          attemptId,
+          epoch
+        });
+      }
+    }
+
+    // 3. Fencing validation if epoch tracked or attemptId provided
+    if (reqRow.epoch) {
+      if (!attemptId || epoch === null || epoch === undefined) {
+        const errMsg = `FENCED_ATTEMPT_ERROR: Request '${requestId}' has active epoch ${reqRow.epoch} (attempt '${reqRow.attempt_id}'). Result submission requires matching attemptId and epoch tokens.`;
+        if (this.tasks?.attempts) {
+          try {
+            this.tasks.attempts.quarantineLateResponse({
+              attemptId: attemptId || `missing_attempt_${requestId}`,
+              requestId,
+              epoch: Number(epoch) || 0,
+              payload: response || error,
+              reason: errMsg
+            });
+          } catch {}
+        }
+        return {
+          status: 'quarantined',
+          quarantined: true,
+          requestId,
+          error: errMsg
+        };
+      }
+      if (Number(epoch) !== reqRow.epoch || (reqRow.attempt_id && attemptId !== reqRow.attempt_id)) {
+        const errMsg = `FENCED_ATTEMPT_ERROR: Stale attempt '${attemptId}' (epoch ${epoch}) for request '${requestId}'. Current epoch is ${reqRow.epoch}.`;
+        if (this.tasks?.attempts) {
+          try {
+            this.tasks.attempts.quarantineLateResponse({
+              attemptId,
+              requestId,
+              epoch: Number(epoch) || 0,
+              payload: response || error,
+              reason: errMsg
+            });
+          } catch {}
+        }
+        return {
+          status: 'quarantined',
+          quarantined: true,
+          requestId,
+          attemptId,
+          epoch,
+          error: errMsg
+        };
+      }
+    }
+
     if (attemptId && (epoch === null || epoch === undefined)) {
       throw new Error(`Fencing Error: epoch token is required when attemptId is provided for request '${requestId}'.`);
     }
-    if (attemptId && (epoch !== null && epoch !== undefined) && this.tasks?.attempts) {
+    if (reqRow.task_id && attemptId && (epoch !== null && epoch !== undefined) && this.tasks?.attempts) {
       try {
-        this.tasks.attempts.validateFencing({ taskId: reqRow.task_id || requestId, attemptId, epoch: Number(epoch), agentId });
+        this.tasks.attempts.validateFencing({ taskId: reqRow.task_id, attemptId, epoch: Number(epoch), agentId });
       } catch (fencingErr) {
         try {
           this.tasks.attempts.quarantineLateResponse({
@@ -1514,7 +1975,12 @@ export class MailboxHub {
             executionMetadata: {
               attemptEpoch: epoch || 1,
               correlationTier: attemptId ? 'crypto_nonce' : 'direct_session',
-              originRoute: 'direct_answer'
+              originRoute: 'direct_answer',
+              completionConfidence: effectiveConfidence,
+              observedSignals: observedSignals || null,
+              stableTicks: stableTicks || null,
+              graceRecheck: graceRecheck || null,
+              isHeuristic: effectiveConfidence === 'STABILITY_HEURISTIC'
             }
           });
 
@@ -1544,7 +2010,12 @@ export class MailboxHub {
           payload: {
             snippet: resultStr ? (resultStr.length > 100 ? resultStr.slice(0, 100) + '...' : resultStr) : null,
             status,
-            error: error ? (error.length > 80 ? error.slice(0, 80) + '...' : error) : null
+            error: error ? (error.length > 80 ? error.slice(0, 80) + '...' : error) : null,
+            completionConfidence: effectiveConfidence,
+            isHeuristic: Boolean(effectiveConfidence === 'STABILITY_HEURISTIC'),
+            observedSignals: observedSignals || null,
+            stableTicks: stableTicks || null,
+            graceRecheck: graceRecheck || null
           },
           dedupKey: `direct_resp_${requestId}_${status}`
         });
@@ -1569,7 +2040,12 @@ export class MailboxHub {
           payload: {
             snippet: resultStr ? (resultStr.length > 100 ? resultStr.slice(0, 100) + '...' : resultStr) : null,
             status,
-            error: error ? (error.length > 80 ? error.slice(0, 80) + '...' : error) : null
+            error: error ? (error.length > 80 ? error.slice(0, 80) + '...' : error) : null,
+            completionConfidence: effectiveConfidence,
+            isHeuristic: Boolean(effectiveConfidence === 'STABILITY_HEURISTIC'),
+            observedSignals: observedSignals || null,
+            stableTicks: stableTicks || null,
+            graceRecheck: graceRecheck || null
           },
           dedupKey: `direct_resp_${requestId}_${status}`
         });

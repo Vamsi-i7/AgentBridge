@@ -13,6 +13,7 @@ import { ResponseCorrelatorV2, CorrelationTier, CorrelationConfidence } from '..
 import { SafeRouteScheduler, TransportOutcome, TransportResult } from '../transports/transport-contract.js';
 import { PriorityScheduler, RequestEnvelope, RequestState } from '../protocol/envelope.js';
 import { sendDesktopNotification, activateDesktopApp } from '../session-adapters/desktop-notifier.js';
+import { getAgentManifest, getAgentAppName } from '../capabilities/agent-manifest.js';
 
 /**
  * DesktopControlPlane:
@@ -72,7 +73,11 @@ export class DesktopControlPlane extends EventEmitter {
           requestId: ev && ev.requestId,
           targetApp: ev && ev.targetApp,
           response: ev && ev.response,
-          status: 'completed'
+          status: 'completed',
+          completionConfidence: ev && ev.completionConfidence,
+          observedSignals: ev && ev.observedSignals,
+          stableTicks: ev && ev.stableTicks,
+          graceRecheck: ev && ev.graceRecheck
         }).catch(() => {});
       });
       // Observer failure/timeout is deliberately NOT allowed to overwrite the
@@ -103,7 +108,16 @@ export class DesktopControlPlane extends EventEmitter {
    *
    * @returns {Promise<{handled:boolean, reason?:string, requestId?:string}>}
    */
-  async settleFromCompletion({ requestId, targetApp = null, response = null, status = 'completed' }) {
+  async settleFromCompletion({
+    requestId,
+    targetApp = null,
+    response = null,
+    status = 'completed',
+    completionConfidence = null,
+    observedSignals = null,
+    stableTicks = null,
+    graceRecheck = null
+  }) {
     if (!this.mailbox || !requestId) return { handled: false, reason: 'NO_MAILBOX_OR_REQUEST_ID' };
     let request = null;
     try {
@@ -142,14 +156,22 @@ export class DesktopControlPlane extends EventEmitter {
           taskId: request.taskId,
           agentId: request.toAgent,
           status,
-          result: response
+          result: response,
+          completionConfidence,
+          observedSignals,
+          stableTicks,
+          graceRecheck
         });
       } else {
         this.mailbox.answerRequest({
           requestId,
           agentId: request.toAgent,
           response,
-          status
+          status,
+          completionConfidence,
+          observedSignals,
+          stableTicks,
+          graceRecheck
         });
       }
     } catch (err) {
@@ -186,8 +208,9 @@ export class DesktopControlPlane extends EventEmitter {
     // 2. ChatGPT Desktop Local Engine
     this.routeScheduler.registerTransport('chatgpt-local-engine', {
       send: async (env, ctx = {}) => {
-        const isChatGpt = env.toAgent && env.toAgent.toLowerCase().includes('chatgpt');
-        if (!isChatGpt || !this.chatgptLocalEngine.isInstalled()) {
+        const manifest = getAgentManifest(env.toAgent);
+        const supportsLocalEngine = manifest?.routes?.some(r => r.id === 'chatgpt-local-engine' || r.type === 'local_engine') ?? (env.toAgent && env.toAgent.toLowerCase().includes('chatgpt'));
+        if (!supportsLocalEngine || !this.chatgptLocalEngine.isInstalled()) {
           return new TransportResult({
             outcome: TransportOutcome.UNSUPPORTED,
             routeId: 'chatgpt-local-engine'
@@ -280,7 +303,7 @@ export class DesktopControlPlane extends EventEmitter {
         if (!this.enabled) {
           return new TransportResult({ outcome: TransportOutcome.UNSUPPORTED, routeId: 'accessibility' });
         }
-        const appName = env.toAgent && env.toAgent.toLowerCase().includes('claude') ? 'Claude' : 'ChatGPT';
+        const appName = getAgentAppName(env.toAgent, 'ChatGPT');
         const windowState = await this.axEngine.ensureAccessibleWindow(appName);
         if (!windowState.ok) {
           return new TransportResult({

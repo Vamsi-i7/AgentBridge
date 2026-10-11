@@ -1,0 +1,284 @@
+{
+  "version": "1.0.0",
+  "updatedAt": "2026-10-11T12:07:01.599Z",
+  "skills": {
+    "inhouse/bridge-completion-verification": {
+      "name": "bridge-completion-verification",
+      "source": "inhouse",
+      "version": "1.0.0",
+      "author": "Antigravity IDE & Jayanth",
+      "license": "MIT",
+      "riskTier": "A",
+      "description": "Nonce and correlation verification, accessibility UI probe signals, and distinguishing heuristic stillness from confirmed completion.",
+      "sha256": "df845c1ef8121f6d21e0066d17c77a6aadeef7e1930bc6ce5a972a68df720762",
+      "installedAt": "2026-10-11T12:01:36.028Z",
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    "inhouse/bridge-delegation": {
+      "name": "bridge-delegation",
+      "source": "inhouse",
+      "version": "1.0.0",
+      "author": "Antigravity IDE & Jayanth",
+      "license": "MIT",
+      "riskTier": "A",
+      "description": "Multi-agent task delegation patterns, bounds checking, recursion limits, and lifecycle tracking across Agent Bridge.",
+      "sha256": "8612b557c3d92c49200e51c3f2ab56681f9e8d8886320cf5f0662568ff21bb67",
+      "installedAt": "2026-10-11T12:01:36.037Z",
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    "inhouse/bridge-handoff-compaction": {
+      "name": "bridge-handoff-compaction",
+      "source": "inhouse",
+      "version": "1.0.0",
+      "author": "Antigravity IDE & Jayanth",
+      "license": "MIT",
+      "riskTier": "A",
+      "description": "Session compaction survival, persistent handoff artifact conventions, and ground truth re-anchoring across agent turns.",
+      "sha256": "623fe47dab71104649cbc23100f0b2974bc4272dbcd17f5914744bdd615a8ea8",
+      "installedAt": "2026-10-11T12:01:36.038Z",
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    "inhouse/bridge-memory-use": {
+      "name": "bridge-memory-use",
+      "source": "inhouse",
+      "version": "1.0.0",
+      "author": "Antigravity IDE & Jayanth",
+      "license": "MIT",
+      "riskTier": "A",
+      "description": "Local FTS5 knowledge store interaction, BM25 query formulation, content provenance, and lifecycle status tracking.",
+      "sha256": "9b87ec13eb55adb3e4b064ef9e6e3550807de1ccf0375738594c91e40b4007bb",
+      "installedAt": "2026-10-11T12:01:36.039Z",
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    "inhouse/bridge-multi-agent-testing": {
+      "name": "bridge-multi-agent-testing",
+      "source": "inhouse",
+      "version": "1.0.0",
+      "author": "Antigravity IDE & Jayanth",
+      "license": "MIT",
+      "riskTier": "A",
+      "description": "Interoperability testing methodology, separate-process responders, unpredictable nonces, and avoiding synthetic simulation traps.",
+      "sha256": "13ffb856e387e98e7f6a7c6ce59f8d08ffbaa6ee0ed2cd8bd7f0710e4f0a4e49",
+      "installedAt": "2026-10-11T12:01:36.040Z",
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    "inhouse/bridge-response-handling": {
+      "name": "bridge-response-handling",
+      "source": "inhouse",
+      "version": "1.0.0",
+      "author": "Antigravity IDE & Jayanth",
+      "license": "MIT",
+      "riskTier": "A",
+      "description": "Three-tier confidence interpretation, verbatim fidelity delivery, and handling unconfirmed transport routes.",
+      "sha256": "4cd5e4a858ef21c734abce1962b721c995c0fb1e1e11dfcadbd8863baa3d8004",
+      "installedAt": "2026-10-11T12:01:36.040Z",
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    "inhouse/bridge-token-discipline": {
+      "name": "bridge-token-discipline",
+      "source": "inhouse",
+      "version": "1.0.0",
+      "author": "Antigravity IDE & Jayanth",
+      "license": "MIT",
+      "riskTier": "A",
+      "description": "Context efficiency, profile-capped tool advertisement, compact artifact envelopes, and zero redundant model calls.",
+      "sha256": "63768b3739e8681e1db964f6133b97ec06882c42e38e8b4722090908bf528cba",
+      "installedAt": "2026-10-11T12:01:36.040Z",
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    "inhouse/mcp-builder": {
+      "name": "mcp-builder",
+      "source": "inhouse",
+      "version": "1.0.0",
+      "author": "Unknown",
+      "license": "Apache-2.0",
+      "riskTier": "C",
+      "description": "Guide for creating high-quality MCP (Model Context Protocol) servers that enable LLMs to interact with external services through well-designed tools. Use when building MCP servers to integrate external APIs or services, whether in Python (FastMCP) or Node/TypeScript (MCP SDK).",
+      "sha256": "26f444aa3dd60ac3bb16b95ec5a59ba2de9caaa5a0f8c93be0702eeb8b7ce464",
+      "installedAt": "2026-10-11T12:01:36.048Z",
+      "files": [
+        "LICENSE.txt",
+        "SKILL.md",
+        "VETTING_AUDIT.md",
+        "reference/evaluation.md",
+        "reference/mcp_best_practices.md",
+        "reference/node_mcp_server.md",
+        "reference/python_mcp_server.md",
+        "scripts/connections.py",
+        "scripts/evaluation.py",
+        "scripts/example_evaluation.xml",
+        "scripts/requirements.txt"
+      ]
+    },
+    "ecosystem/google-antigravity-sdk": {
+      "name": "google-antigravity-sdk",
+      "source": "ecosystem",
+      "version": "1.0.0",
+      "author": "Unknown",
+      "license": "Apache-2.0",
+      "riskTier": "A",
+      "description": "Design, implement, and debug autonomous AI agents and multi-agent systems using the Google Antigravity (AGY) SDK. ACTIVATE this skill when the user wants to create, configure, or orchestrate Google Antigravity agents.",
+      "sha256": "cc3f7212a12cbbe1b8fe1085a81b5ee72368bc7b34cfcd2b98dd535e165142cd",
+      "installedAt": "2026-10-11T12:06:54.284Z",
+      "files": [
+        "SKILL.md",
+        "examples/getting_started/agent_skills.md",
+        "examples/getting_started/app_data_dir_override.md",
+        "examples/getting_started/budget_limits.md",
+        "examples/getting_started/cancellation.md",
+        "examples/getting_started/compaction.md",
+        "examples/getting_started/custom_tool.md",
+        "examples/getting_started/customizing_retries.md",
+        "examples/getting_started/hello_world.md",
+        "examples/getting_started/hooks.md",
+        "examples/getting_started/local_models.md",
+        "examples/getting_started/mcp_tools.md",
+        "examples/getting_started/multimodal.md",
+        "examples/getting_started/periodic_trigger.md",
+        "examples/getting_started/persistence.md",
+        "examples/getting_started/persona_config.md",
+        "examples/getting_started/structured_output.md",
+        "examples/getting_started/subagents.md",
+        "examples/getting_started/web_tools.md",
+        "references/agent_configuration.md",
+        "references/architecture.md",
+        "references/built_in_tools.md",
+        "references/error_handling.md",
+        "references/local_models.md",
+        "references/mcp_integration.md",
+        "references/observability.md",
+        "references/safety_policies.md"
+      ]
+    },
+    "ecosystem/chrome-extensions": {
+      "name": "chrome-extensions",
+      "source": "ecosystem",
+      "version": "1.0.0",
+      "author": "Unknown",
+      "license": "Apache-2.0",
+      "riskTier": "A",
+      "description": ">",
+      "sha256": "777ecfcd34cc2702d605546200ebcccfb747e0ae1ae85f2ce88488f41e7f30a1",
+      "installedAt": "2026-10-11T12:06:54.301Z",
+      "files": [
+        "SKILL.md",
+        "references/extensions/api-calling.md",
+        "references/extensions/auth-identity.md",
+        "references/extensions/content-scripts.md",
+        "references/extensions/context-menus.md",
+        "references/extensions/csp-sandbox.md",
+        "references/extensions/declarative-net-request.md",
+        "references/extensions/devtools.md",
+        "references/extensions/icons.md",
+        "references/extensions/media-capture.md",
+        "references/extensions/message-passing.md",
+        "references/extensions/omnibox.md",
+        "references/extensions/permissions.md",
+        "references/extensions/popup-ui.md",
+        "references/extensions/prompt-api.md",
+        "references/extensions/service-worker.md",
+        "references/extensions/side-panel.md",
+        "references/extensions/storage.md",
+        "references/extensions/tab-management.md",
+        "references/extensions/user-scripts.md",
+        "references/webstore/chromewebstore-template.md",
+        "references/webstore/privacy-policy.md",
+        "references/webstore/review-checklist.md",
+        "references/webstore/store-listing.md"
+      ]
+    },
+    "ecosystem/modern-web-guidance": {
+      "name": "modern-web-guidance",
+      "source": "ecosystem",
+      "version": "1.0.0",
+      "author": "Unknown",
+      "license": "Apache-2.0",
+      "riskTier": "A",
+      "description": "|",
+      "sha256": "a2aa7321240ad56b50478deba51b42cc784dfb764860cd70f824d88974ed4cac",
+      "installedAt": "2026-10-11T12:06:54.303Z",
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    "ecosystem/debug-optimize-lcp": {
+      "name": "debug-optimize-lcp",
+      "source": "ecosystem",
+      "version": "1.0.0",
+      "author": "Unknown",
+      "license": "Apache-2.0",
+      "riskTier": "A",
+      "description": "Guides debugging and optimizing Largest Contentful Paint (LCP) using Chrome DevTools MCP tools. Use this skill whenever the user asks about LCP performance, slow page loads, Core Web Vitals optimization, or wants to understand why their page's main content takes too long to appear. Also use when the user mentions \"largest contentful paint\", \"page load speed\", \"CWV\", or wants to improve how fast their hero image or main content renders.",
+      "sha256": "9b8fa4a68d136b2a2c2f7aad47be434fc22519bc1521242b0e2b91a0117bffd9",
+      "installedAt": "2026-10-11T12:06:54.307Z",
+      "files": [
+        "SKILL.md",
+        "references/elements-and-size.md",
+        "references/lcp-breakdown.md",
+        "references/lcp-snippets.md",
+        "references/optimization-strategies.md"
+      ]
+    },
+    "ecosystem/firebase-firestore": {
+      "name": "firebase-firestore",
+      "source": "ecosystem",
+      "version": "1.0.0",
+      "author": "Unknown",
+      "license": "Apache-2.0",
+      "riskTier": "A",
+      "description": ">-",
+      "sha256": "9ed350080209af51df303b07329a1b899bd197fe9710194013ced06715cb3043",
+      "installedAt": "2026-10-11T12:06:54.319Z",
+      "files": [
+        "SKILL.md",
+        "references/enterprise/android_sdk_usage.md",
+        "references/enterprise/data_model.md",
+        "references/enterprise/flutter_setup.md",
+        "references/enterprise/indexes.md",
+        "references/enterprise/ios_setup.md",
+        "references/enterprise/provisioning.md",
+        "references/enterprise/python_sdk_usage.md",
+        "references/enterprise/security_rules.md",
+        "references/enterprise/web_sdk_usage.md",
+        "references/standard/android_sdk_usage.md",
+        "references/standard/flutter_setup.md",
+        "references/standard/indexes.md",
+        "references/standard/ios_setup.md",
+        "references/standard/provisioning.md",
+        "references/standard/security_rules.md",
+        "references/standard/web_sdk_usage.md"
+      ]
+    },
+    "ecosystem/memory-leak-debugging": {
+      "name": "memory-leak-debugging",
+      "source": "ecosystem",
+      "version": "1.0.0",
+      "author": "Unknown",
+      "license": "Apache-2.0",
+      "riskTier": "B",
+      "description": "Diagnoses and resolves memory leaks in JavaScript/Node.js applications. Use when a user reports high memory usage, OOM errors, or wants to analyze heapsnapshots or run memory leak detection tools like memlab.",
+      "sha256": "254482248a1679f90a7a18e6a625f24fb8b74dbfe10dcd0cf98c057d16ae9b67",
+      "installedAt": "2026-10-11T12:07:01.599Z",
+      "files": [
+        "SKILL.md",
+        "references/common-leaks.md",
+        "references/compare_snapshots.js",
+        "references/memlab.md"
+      ]
+    }
+  }
+}

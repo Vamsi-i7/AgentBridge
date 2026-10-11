@@ -1,23 +1,23 @@
 # Agent Bridge — Current Implementation State
 
-**Refreshed:** 2026-10-10
+**Refreshed:** 2026-10-11
 **Repository:** `/Users/jayanthpranaykonada/agent-bridge`  
-**HEAD (baseline):** `4c9c7c17a971bde585a19ee600f8446c9150265a`
+**HEAD (baseline):** `3c7defd7c830028721f94bb4788ab2ce8ac213d5`
 **Branch:** `main`
-**Tree:** working tree carries Stage 0 startupStamp instrumentation and diagnostic metadata. Zia untouched.
-**Live Control Plane:** Bound to `127.0.0.1:8765` (PID `39356` at measurement time). Both `/mcp` and `/api/mcp/call` active in full parity with 74 tools served.
+**Tree:** Working tree preserves uncommitted remediation fixes in 6 source files and 1 verification test file. Zia untouched.
+**Live Control Plane:** Bound to `127.0.0.1:8765` (PID `70514` verified matching HEAD `3c7defd7c830028721f94bb4788ab2ce8ac213d5`). Both `/mcp` and `/api/mcp/call` active in full parity with 74 tools served.
 
 This is the authoritative implementation handoff for Agent Bridge. It supersedes older notes and reflects the ground-truth state verified against live processes and providers.
 
 ## Verification
 
-Full regression suite (`npm test` → `node --test --test-concurrency=1 tests/*.test.js`), latest run under Mission 4 completion:
+Full regression suite (`npm test` → `node --test --test-concurrency=1 tests/*.test.js`), latest run under Mission 5 baseline:
 
-- tests: **715**
-- pass: **707**
+- tests: **794**
+- pass: **786**
 - fail: **0**
 - skipped: **8** (explicitly live-gated: live model quota/credentials requiring explicit opt-in)
-- duration: **22.08s**
+- duration: **25.64s**
 - exit code: **0**
 
 ## Runtime composition

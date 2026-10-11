@@ -300,11 +300,11 @@ export class BridgeHttpServer {
         const auth = this.resolveAuth(req);
         if (this.requireApiKey && !auth.authorized) {
           res.writeHead(401, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ error: auth.error || 'Unauthorized: missing or invalid API key.' }));
+          return res.end(JSON.stringify({ ok: false, error: auth.error || 'Unauthorized: missing or invalid API key.' }));
         }
         if (!auth.authorized) {
           res.writeHead(401, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ error: auth.error || 'Unauthorized: missing or invalid API key.' }));
+          return res.end(JSON.stringify({ ok: false, error: auth.error || 'Unauthorized: missing or invalid API key.' }));
         }
 
         // Protected REST routes fail closed by default if credentials are absent or unauthenticated
@@ -839,9 +839,9 @@ export class BridgeHttpServer {
               }
 
               const isPublicTool = ['bridge_ping', 'bridge_discover_agents', 'bridge_agent_presence', 'bridge_diagnostics'].includes(name);
-              if (auth.unauthenticatedLocal && (isEffectfulTool(name) || name === 'bridge_get_audit_log')) {
+              if ((auth.unauthenticatedLocal || !auth.authorized) && (isEffectfulTool(name) || name === 'bridge_get_audit_log')) {
                 res.writeHead(401, { 'Content-Type': 'application/json' });
-                return res.end(JSON.stringify({ error: `Unauthorized: valid credentials required for tool '${name}'.` }));
+                return res.end(JSON.stringify({ ok: false, error: `Unauthorized: valid credentials required for tool '${name}'.` }));
               }
               const toolContext = {
                 controller: this.controller,

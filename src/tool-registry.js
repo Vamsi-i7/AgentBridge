@@ -5,6 +5,7 @@ import { isEffectfulTool, getToolClassification, EffectsLedger } from './effects
 import { AttemptLedger } from './attempts/attempt-ledger.js';
 import { ArtifactStore, ArtifactError } from './artifacts/artifact-store.js';
 import { KnowledgeStore } from './memory/knowledge-store.js';
+import { SkillsManager } from './skills/skills-manager.js';
 
 // Lazily-created per-context artifact store, so every transport (stdio MCP, HTTP
 // MCP, plugins) can store/retrieve real bytes without each wiring its own.
@@ -32,14 +33,127 @@ function resolveKnowledgeStore(ctx) {
   return store;
 }
 
+const skillsManagerCache = new WeakMap();
+export function resolveSkillsManager(ctx) {
+  if (ctx.skillsManager) return ctx.skillsManager;
+  let manager = skillsManagerCache.get(ctx);
+  if (!manager) {
+    manager = new SkillsManager();
+    skillsManagerCache.set(ctx, manager);
+  }
+  return manager;
+}
+
+export const SKILLS_TOOL_DEFINITIONS = Object.freeze([
+  {
+    name: 'bridge_list_skills',
+    description: 'List installed agent skills from .agents/skills with source, version, license, and risk tier.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: 'Filter by source (inhouse, anthropics, composio, etc.)' },
+        riskTier: { type: 'string', enum: ['A', 'B', 'C'], description: 'Filter by risk tier (A, B, C)' },
+        limit: { type: 'number', description: 'Maximum skills to return (default 50)' },
+        agentId: { type: 'string' }
+      }
+    }
+  },
+  {
+    name: 'bridge_get_skill',
+    description: 'Retrieve full skill metadata, SKILL.md body, and file manifest for an installed skill.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Skill name' },
+        source: { type: 'string', description: 'Skill source namespace (optional)' },
+        agentId: { type: 'string' }
+      },
+      required: ['name']
+    }
+  },
+  {
+    name: 'bridge_get_skill_resource',
+    description: 'Safely read a resource, script, or reference file within an installed skill.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Skill name' },
+        source: { type: 'string', description: 'Skill source namespace (optional)' },
+        path: { type: 'string', description: 'Relative path to file within skill directory' },
+        agentId: { type: 'string' }
+      },
+      required: ['name', 'path']
+    }
+  },
+  {
+    name: 'bridge_search_skills',
+    description: 'Search installed skills by keywords, name, description, and markdown content relevance.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search keywords or prompt' },
+        source: { type: 'string', description: 'Filter by source (optional)' },
+        riskTier: { type: 'string', enum: ['A', 'B', 'C'], description: 'Filter by risk tier (optional)' },
+        limit: { type: 'number', description: 'Maximum skills to return (default 10)' },
+        agentId: { type: 'string' }
+      },
+      required: ['query']
+    }
+  }
+]);
+
 export const TOOL_PROFILES = Object.freeze({
   ALL: 'all',
+  COMMUNICATION: 'communication',
   MINIMAL: 'minimal',
   COLLABORATOR: 'collaborator',
-  DEVELOPER: 'developer'
+  DEVELOPER: 'developer',
+  SKILLS: 'skills'
 });
 
+export const COMMUNICATION_TOOL_DEFINITIONS = Object.freeze([
+  {
+    name: 'bridge_wait_for_response',
+    description: 'Await correlated response for a request without polling. Registers waiter before durable check and returns instant result.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        requestId: { type: 'string', description: 'The unique request ID to wait for' },
+        timeoutMs: { type: 'number', description: 'Timeout in milliseconds (default 60000)' }
+      },
+      required: ['requestId']
+    }
+  },
+  {
+    name: 'bridge_slice_fetch',
+    description: 'Fetch bounded slice of content-addressed payload by hash reference (ref:<sha256>) without pulling large bodies into model context.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: 'Content hash or reference (ref:<sha256>)' },
+        offset: { type: 'number', description: 'Starting byte offset (default 0)' },
+        length: { type: 'number', description: 'Number of bytes to fetch (default 4000)' }
+      },
+      required: ['ref']
+    }
+  }
+]);
+
 export const PROFILE_TOOLS = Object.freeze({
+  communication: Object.freeze([
+    'bridge_ask_agent',
+    'bridge_wait_for_response',
+    'bridge_submit_task_result',
+    'bridge_slice_fetch',
+    'bridge_discover_tools'
+  ]),
+  skills: Object.freeze([
+    'bridge_ping',
+    'bridge_list_skills',
+    'bridge_get_skill',
+    'bridge_get_skill_resource',
+    'bridge_search_skills'
+  ]),
   minimal: Object.freeze([
     'bridge_ping',
     'bridge_discover_agents',
@@ -125,6 +239,22 @@ export class ToolRegistry {
 
   getToolDefinitions(profile = this.profile) {
     const norm = (profile || 'all').toLowerCase();
+    if (norm === 'skills') {
+      const pingDef = this.tools.get('bridge_ping');
+      const ping = pingDef ? [{ name: pingDef.name, description: pingDef.description, inputSchema: pingDef.inputSchema }] : [];
+      return [...ping, ...SKILLS_TOOL_DEFINITIONS];
+    }
+    if (norm === 'communication') {
+      const askDef = this.tools.get('bridge_ask_agent');
+      const submitDef = this.tools.get('bridge_submit_task_result');
+      const discoverDef = this.tools.get('bridge_discover_tools');
+      const commTools = [];
+      if (askDef) commTools.push({ name: askDef.name, description: askDef.description, inputSchema: askDef.inputSchema });
+      commTools.push(...COMMUNICATION_TOOL_DEFINITIONS);
+      if (submitDef) commTools.push({ name: submitDef.name, description: submitDef.description, inputSchema: submitDef.inputSchema });
+      if (discoverDef) commTools.push({ name: discoverDef.name, description: discoverDef.description, inputSchema: discoverDef.inputSchema });
+      return commTools;
+    }
     const allowed = PROFILE_TOOLS[norm] ?? null;
 
     const all = Array.from(this.tools.values()).map(t => ({
@@ -170,6 +300,118 @@ export class ToolRegistry {
           const { RequestExplainer } = await import('./diagnostics/request-explainer.js');
           const explainer = new RequestExplainer(ctx.db || ctx.audit?.db || ctx.logger?.db || ctx.logger || ctx.mailbox?.db);
           return explainer.explainRequest(args.requestId, caller);
+        }
+      };
+    }
+    if (!tool && resolvedName === 'bridge_request_ledger') {
+      tool = {
+        name: 'bridge_request_ledger',
+        handler: async (args, ctx) => {
+          const { RequestTracer } = await import('./diagnostics/request-tracer.js');
+          const tracer = ctx.tracer || ctx.mailbox?.tracer || (ctx.db || ctx.audit?.db || ctx.logger?.db ? new RequestTracer({ db: ctx.db || ctx.audit?.db || ctx.logger?.db }) : null);
+          if (!tracer) throw new Error('RequestTracer not available');
+          const ledger = tracer.getLedger(args.requestId);
+          if (!ledger) {
+            return { found: false, requestId: args.requestId, error: 'Ledger not found' };
+          }
+          return {
+            found: true,
+            requestId: args.requestId,
+            status: ledger.status,
+            failureStage: ledger.failureStage || null,
+            ledger,
+            formatted: tracer.formatLedgerText(ledger)
+          };
+        }
+      };
+    }
+    if (!tool && resolvedName === 'bridge_wait_for_response') {
+      tool = {
+        name: 'bridge_wait_for_response',
+        handler: async (args, ctx) => {
+          const mailbox = ctx.mailbox;
+          const eventBus = ctx.eventBus || mailbox?.eventBus;
+          const timeoutMs = args.timeoutMs || 60000;
+          if (!eventBus) throw new Error('EventBus not available in execution context');
+          const outcome = await eventBus.waitForResponse({
+            requestId: args.requestId,
+            timeoutMs
+          });
+          return outcome;
+        }
+      };
+    }
+    if (!tool && resolvedName === 'bridge_slice_fetch') {
+      tool = {
+        name: 'bridge_slice_fetch',
+        handler: async (args, ctx) => {
+          const { defaultCASStore } = await import('./artifacts/content-addressed-store.js');
+          const cas = ctx.casStore || defaultCASStore;
+          const slice = cas.getSlice(args.ref, args.offset || 0, args.length || 4000);
+          if (!slice) {
+            if (ctx.artifactStore) {
+              try {
+                return ctx.artifactStore.readChunk(args.ref, {
+                  offset: args.offset || 0,
+                  length: args.length || 4000
+                });
+              } catch {}
+            }
+            return { found: false, error: `Content reference '${args.ref}' not found in CAS store` };
+          }
+          return { found: true, ...slice };
+        }
+      };
+    }
+    if (!tool && resolvedName === 'bridge_list_skills') {
+      tool = {
+        name: 'bridge_list_skills',
+        handler: async (args, ctx) => {
+          const sm = resolveSkillsManager(ctx);
+          return sm.listSkills({
+            source: args.source,
+            riskTier: args.riskTier,
+            limit: args.limit
+          });
+        }
+      };
+    }
+    if (!tool && resolvedName === 'bridge_get_skill') {
+      tool = {
+        name: 'bridge_get_skill',
+        handler: async (args, ctx) => {
+          const sm = resolveSkillsManager(ctx);
+          return sm.getSkill({
+            name: args.name,
+            source: args.source
+          });
+        }
+      };
+    }
+    if (!tool && resolvedName === 'bridge_get_skill_resource') {
+      tool = {
+        name: 'bridge_get_skill_resource',
+        handler: async (args, ctx) => {
+          const sm = resolveSkillsManager(ctx);
+          return sm.getSkillResource({
+            name: args.name,
+            source: args.source,
+            path: args.path
+          });
+        }
+      };
+    }
+    if (!tool && resolvedName === 'bridge_search_skills') {
+      tool = {
+        name: 'bridge_search_skills',
+        handler: async (args, ctx) => {
+          const sm = resolveSkillsManager(ctx);
+          return sm.searchSkills({
+            query: args.query,
+            source: args.source,
+            riskTier: args.riskTier,
+            limit: args.limit
+          });
         }
       };
     }
@@ -1510,8 +1752,7 @@ export class ToolRegistry {
         }
       },
       handler: async (args, ctx) => {
-        const callerAgentId = args.agentId || ctx.agentId;
-        const isPrivileged = Boolean(ctx.isPrivileged) || callerAgentId === 'system' || Boolean(ctx.allowAuditRead);
+        const isPrivileged = Boolean(ctx.isPrivileged) || Boolean(ctx.allowAuditRead);
         if (!isPrivileged) {
           const err = new Error('Forbidden: audit logs require privileged administrative access.');
           err.code = 'UNAUTHORIZED_AUDIT_ACCESS';

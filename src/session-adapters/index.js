@@ -19,23 +19,26 @@ export {
   activateDesktopApp
 };
 
+const ADAPTER_FACTORIES = new Map([
+  ['antigravity-ide', (opts) => new AntigravitySessionAdapter(opts)],
+  ['claude-desktop', (opts) => new ClaudeDesktopSessionAdapter(opts)],
+  ['chatgpt-desktop', (opts) => new ChatGPTSessionAdapter(opts)],
+  ['claude-ui', (opts) => new ClaudeDesktopUIAdapter(opts)],
+  ['chatgpt-ui', (opts) => new ChatGPTDesktopUIAdapter(opts)]
+]);
+
+export function registerSessionAdapterFactory(agentId, factory) {
+  ADAPTER_FACTORIES.set(agentId.toLowerCase(), factory);
+}
+
 export function createSessionAdapter(agentId, options = {}) {
   if (options.useComposite || options.desktopAutomation !== undefined || options.enableDesktopUI) {
     return new CompositeSessionAdapter(agentId, options);
   }
 
-  switch (agentId) {
-    case 'antigravity-ide':
-      return new AntigravitySessionAdapter(options);
-    case 'claude-desktop':
-      return new ClaudeDesktopSessionAdapter(options);
-    case 'chatgpt-desktop':
-      return new ChatGPTSessionAdapter(options);
-    case 'claude-ui':
-      return new ClaudeDesktopUIAdapter(options);
-    case 'chatgpt-ui':
-      return new ChatGPTDesktopUIAdapter(options);
-    default:
-      return new AgentSessionAdapter(agentId, options);
+  const factory = ADAPTER_FACTORIES.get(String(agentId || '').toLowerCase());
+  if (factory) {
+    return factory(options);
   }
+  return new AgentSessionAdapter(agentId, options);
 }

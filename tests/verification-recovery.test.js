@@ -280,7 +280,11 @@ test('Agent Bridge Recovery Verification Suite (18 Points)', async (t) => {
       host: '127.0.0.1',
       port: HTTP_PORT,
       path: '/mcp',
-      method: 'POST'
+      method: 'POST',
+      headers: {
+        'Host': '127.0.0.1',
+        'x-api-key': apiKey
+      }
     }, {
       jsonrpc: '2.0',
       id: 99,
