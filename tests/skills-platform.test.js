@@ -247,14 +247,15 @@ Verified content here.
     const allTools = registry.getToolDefinitions('all');
     assert.strictEqual(allTools.length, 74, 'Default tool profile must remain strictly 74 tools for backwards compatibility');
 
-    // 'skills' profile advertises exactly 5 tools
+    // 'skills' profile advertises exactly 6 tools (including lazy bridge_skill_load)
     const skillsTools = registry.getToolDefinitions('skills');
-    assert.strictEqual(skillsTools.length, 5);
+    assert.strictEqual(skillsTools.length, 6);
     const names = skillsTools.map(t => t.name);
     assert.ok(names.includes('bridge_ping'));
     assert.ok(names.includes('bridge_list_skills'));
     assert.ok(names.includes('bridge_get_skill'));
     assert.ok(names.includes('bridge_get_skill_resource'));
     assert.ok(names.includes('bridge_search_skills'));
+    assert.ok(names.includes('bridge_skill_load'));
   });
 });

@@ -1295,6 +1295,8 @@ export class MailboxHub {
               details: { requestId, taskId, terminalStatus: reqRow.status, submittedStatus: status }
             });
           }
+          // Idempotency invariant: terminal requests cannot be re-settled or double-count tokens/events
+          return;
         } else {
           try {
             targetDb.prepare(`

@@ -12,11 +12,12 @@ import { LifecycleStage } from '../diagnostics/request-tracer.js';
  * 5. Correlated tracing: maintains parentRequestId, child attemptIds, and monotonic epochs across hops.
  */
 export class MultiHopRouter {
-  constructor({ mailboxHub, taskManager, eventBus, tracer = null }) {
+  constructor({ mailboxHub, taskManager, eventBus, tracer = null, permissionGuard = null, guard = null }) {
     this.mailbox = mailboxHub;
     this.taskManager = taskManager;
     this.eventBus = eventBus;
     this.tracer = tracer || mailboxHub?.tracer || null;
+    this.guard = permissionGuard || guard || mailboxHub?.guard || null;
     this.maxHops = 10;
     this.childTasksByParent = new Map(); // parentTaskId -> Set<childTaskId>
   }
@@ -38,6 +39,7 @@ export class MultiHopRouter {
     hops,
     initialInput,
     parentRequestId = null,
+    initiatorAgent = 'initiator',
     maxHops = 10,
     timeoutPerHopMs = 30000
   }) {
@@ -56,10 +58,21 @@ export class MultiHopRouter {
 
     for (let i = 0; i < hops.length; i++) {
       const currentAgent = hops[i];
-      const previousAgent = i === 0 ? 'initiator' : hops[i - 1];
+      const previousAgent = i === 0 ? initiatorAgent : hops[i - 1];
       const hopEpoch = i + 1;
+      const hopNonce = crypto.randomBytes(16).toString('hex');
       const hopAttemptId = `att_hop_${i}_${currentAgent}`;
       const hopReqId = `${pReqId}_hop_${i}`;
+
+      // Authorization guard: verify that previousAgent is allowed to reach currentAgent
+      if (this.guard && typeof this.guard.checkPermission === 'function') {
+        const perm = this.guard.checkPermission(previousAgent, 'DELEGATE');
+        if (!perm.allowed && previousAgent !== 'system' && previousAgent !== 'initiator') {
+          const authErr = new Error(`UNAUTHORIZED_HOP: Agent '${previousAgent}' is not authorized to delegate to '${currentAgent}'.`);
+          authErr.code = 'UNAUTHORIZED_HOP';
+          throw authErr;
+        }
+      }
 
       this.tracer?.mark?.({
         requestId: pReqId,
@@ -69,6 +82,7 @@ export class MultiHopRouter {
         meta: {
           hopIndex: i,
           hopEpoch,
+          hopNonce,
           currentAgent,
           previousAgent,
           isHopForwarding: true
@@ -81,6 +95,9 @@ export class MultiHopRouter {
         toAgent: currentAgent,
         question: currentPayload,
         requestId: hopReqId,
+        attemptId: hopAttemptId,
+        epoch: hopEpoch,
+        nonce: hopNonce,
         timeoutMs: timeoutPerHopMs
       });
 
@@ -100,6 +117,7 @@ export class MultiHopRouter {
         toAgent: currentAgent,
         epoch: hopEpoch,
         attemptId: hopAttemptId,
+        nonce: hopNonce,
         responseSnippet: typeof currentPayload === 'string' ? currentPayload.slice(0, 100) : null
       });
     }

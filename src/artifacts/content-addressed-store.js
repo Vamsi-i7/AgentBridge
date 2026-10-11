@@ -67,6 +67,9 @@ export class ContentAddressedStore {
   get(hash) {
     if (!hash || typeof hash !== 'string') return null;
     const cleanHash = hash.replace(/^ref:/i, '').trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(cleanHash)) {
+      return null;
+    }
 
     // 1. Check memory cache
     if (this.memoryCache.has(cleanHash)) {

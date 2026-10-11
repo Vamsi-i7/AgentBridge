@@ -445,4 +445,154 @@ export class PresenceManager {
 
     return { sessionId, timer, cleanup };
   }
+
+  /**
+   * Separate presence stages: REGISTERED, CONNECTED, READY, CAPABLE, FAILED.
+   * @param {string} agentId
+   * @param {string} [route]
+   * @returns {{ registered: boolean, connected: boolean, ready: boolean, capable: boolean, stage: string, failureReason: string|null }}
+   */
+  getDetailedPresence(agentId, route = null) {
+    const isKnown = (CONFIG.AGENT_IDENTITIES || []).some(id => id.toLowerCase() === agentId?.toLowerCase());
+    const agent = this.getAgent(agentId);
+
+    if (!isKnown && !agent) {
+      return {
+        registered: false,
+        connected: false,
+        ready: false,
+        capable: false,
+        stage: 'FAILED',
+        failureReason: 'UNKNOWN_AGENT'
+      };
+    }
+
+    if (!agent || !agent.connected) {
+      return {
+        registered: true,
+        connected: false,
+        ready: false,
+        capable: false,
+        stage: 'REGISTERED',
+        failureReason: 'DISCONNECTED'
+      };
+    }
+
+    const isReady = Boolean(agent.isLive && (agent.pid ? this.isProcessAlive(agent.pid) : true));
+    if (!isReady) {
+      return {
+        registered: true,
+        connected: true,
+        ready: false,
+        capable: false,
+        stage: 'CONNECTED',
+        failureReason: 'PROCESS_NOT_READY'
+      };
+    }
+
+    const isCapable = Boolean(agent.capabilities && agent.capabilities.length > 0 && agent.health === 'healthy');
+    if (!isCapable) {
+      return {
+        registered: true,
+        connected: true,
+        ready: true,
+        capable: false,
+        stage: 'READY',
+        failureReason: 'CAPABILITY_UNVERIFIED'
+      };
+    }
+
+    return {
+      registered: true,
+      connected: true,
+      ready: true,
+      capable: true,
+      stage: 'CAPABLE',
+      failureReason: null
+    };
+  }
+
+  /**
+   * Cheap route health/presence probe before delivery.
+   * Fails fast with specific stage and reason instead of waiting out a timeout.
+   */
+  async probeRoute(agentId, routeAdapter = null) {
+    if (routeAdapter && typeof routeAdapter.probe === 'function') {
+      try {
+        const probeResult = await routeAdapter.probe();
+        if (!probeResult.ready) {
+          return {
+            ready: false,
+            stage: probeResult.stage || 'FAILED',
+            reason: probeResult.reason || 'ROUTE_UNAVAILABLE',
+            details: probeResult.details
+          };
+        }
+        return {
+          ready: true,
+          stage: probeResult.stage || 'CAPABLE',
+          details: probeResult.details
+        };
+      } catch (err) {
+        return {
+          ready: false,
+          stage: 'FAILED',
+          reason: 'PROBE_ERROR',
+          details: { error: err.message }
+        };
+      }
+    }
+
+    const detailed = this.getDetailedPresence(agentId);
+    if (!detailed.capable) {
+      return {
+        ready: false,
+        stage: detailed.stage,
+        reason: detailed.failureReason || 'TARGET_NOT_READY'
+      };
+    }
+
+    return {
+      ready: true,
+      stage: detailed.stage
+    };
+  }
+
+  /**
+   * Periodic route canary that checks route health and tracks degraded/broken routes with named causes.
+   */
+  async canaryCheck(agentId, routeAdapter = null) {
+    if (!this._degradedRoutes) {
+      this._degradedRoutes = new Map(); // agentId -> { reason, stage, checkedAt }
+    }
+
+    const probe = await this.probeRoute(agentId, routeAdapter);
+    if (!probe.ready) {
+      this._degradedRoutes.set(agentId, {
+        reason: probe.reason,
+        stage: probe.stage,
+        checkedAt: new Date().toISOString()
+      });
+      return {
+        healthy: false,
+        stage: probe.stage,
+        reason: probe.reason,
+        details: probe.details
+      };
+    }
+
+    this._degradedRoutes.delete(agentId);
+    return {
+      healthy: true,
+      stage: probe.stage,
+      details: probe.details
+    };
+  }
+
+  getDegradedRoutes() {
+    return Array.from((this._degradedRoutes || new Map()).entries()).map(([agentId, data]) => ({
+      agentId,
+      ...data
+    }));
+  }
 }

@@ -300,4 +300,119 @@ test('Mission F — Binary Artifact Streaming, Resumable Chunking & Status Lifec
     ]);
     assert.deepStrictEqual(reassembled, toolPayload);
   });
+
+  await t.test('7. Multi-hundred-MiB (200 MiB) streaming round trip with resume and constant memory', async () => {
+    const bigStore = setupStore(500 * 1024 * 1024); // 500 MiB configurable limit
+    try {
+      const totalBytes = 200 * 1024 * 1024; // 200 MiB
+      const chunkSize = 4 * 1024 * 1024;   // 4 MiB chunk
+      const totalChunks = totalBytes / chunkSize; // 50 chunks
+
+      // Constant memory: single reusable 4 MiB chunk buffer
+      const reusableChunk = Buffer.alloc(chunkSize, 0x5A);
+      const overallHasher = crypto.createHash('sha256');
+
+      const session = bigStore.store.initUploadSession({
+        agentId: 'large_uploader',
+        filename: 'large_model_weights.bin',
+        mimeType: 'application/octet-stream',
+        totalBytes,
+        authorizedAgents: ['large_downloader']
+      });
+
+      // Phase 1: Upload first 20 chunks (80 MiB)
+      for (let i = 0; i < 20; i++) {
+        overallHasher.update(reusableChunk);
+        bigStore.store.writeChunk({
+          uploadId: session.uploadId,
+          agentId: 'large_uploader',
+          chunkBytes: reusableChunk,
+          offset: i * chunkSize,
+          isLastChunk: false
+        });
+      }
+
+      // Simulate interruption: retrieve upload session status and resume from current offset
+      const sessionInfo = bigStore.store.getUploadSession(session.uploadId);
+      const resumeOffset = sessionInfo.bytesWritten;
+      assert.strictEqual(resumeOffset, 20 * chunkSize);
+
+      // Phase 2: Resume upload remaining 30 chunks
+      for (let i = 20; i < totalChunks; i++) {
+        overallHasher.update(reusableChunk);
+        const isLast = i === totalChunks - 1;
+        bigStore.store.writeChunk({
+          uploadId: session.uploadId,
+          agentId: 'large_uploader',
+          chunkBytes: reusableChunk,
+          offset: i * chunkSize,
+          isLastChunk: isLast
+        });
+      }
+
+      const expectedSha256 = overallHasher.digest('hex');
+      const finalized = bigStore.store.finalizeUpload({
+        uploadId: session.uploadId,
+        agentId: 'large_uploader',
+        expectedSha256
+      });
+
+      assert.strictEqual(finalized.size_bytes, totalBytes);
+      assert.strictEqual(finalized.sha256, expectedSha256);
+
+      // Phase 3: Constant-memory streaming read chunk by chunk
+      const readHasher = crypto.createHash('sha256');
+      let bytesReadTotal = 0;
+      let eof = false;
+
+      while (!eof) {
+        const chunkRes = bigStore.store.readChunk(finalized.artifact_id, {
+          agentId: 'large_downloader',
+          offset: bytesReadTotal,
+          length: chunkSize
+        });
+        assert.strictEqual(chunkRes.integrityVerified, true);
+        readHasher.update(chunkRes.bytes);
+        bytesReadTotal += chunkRes.length;
+        eof = chunkRes.eof;
+      }
+
+      assert.strictEqual(bytesReadTotal, totalBytes);
+      assert.strictEqual(readHasher.digest('hex'), expectedSha256);
+    } finally {
+      try { bigStore.logger.close(); } catch {}
+      try { fs.rmSync(bigStore.tmpDir, { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  await t.test('8. Receiver environment path verification (verifyReceiverAccess)', async () => {
+    const payload = Buffer.from('hello receiver environment');
+    const ref = env.store.put({
+      bytes: payload,
+      agentId: 'sender_agent',
+      authorizedAgents: ['local_agent', 'remote_agent']
+    });
+
+    // 8a. Path inside receiver root is accessible
+    const localAccess = env.store.verifyReceiverAccess(ref.artifact_id, {
+      receivingAgentId: 'local_agent',
+      receiverFilesystemRoot: env.tmpDir
+    });
+    assert.strictEqual(localAccess.accessible, true);
+    assert.strictEqual(localAccess.status, ArtifactTransferStatus.TRANSFERRED);
+
+    // 8b. Path outside receiver root reports incomplete transfer requiring bytes
+    const foreignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'foreign-agent-root-'));
+    try {
+      const foreignAccess = env.store.verifyReceiverAccess(ref.artifact_id, {
+        receivingAgentId: 'remote_agent',
+        receiverFilesystemRoot: foreignRoot
+      });
+      assert.strictEqual(foreignAccess.accessible, false);
+      assert.strictEqual(foreignAccess.status, 'TRANSFER_INCOMPLETE');
+      assert.strictEqual(foreignAccess.requiresBytesTransfer, true);
+    } finally {
+      try { fs.rmSync(foreignRoot, { recursive: true, force: true }); } catch {}
+    }
+  });
 });

@@ -39,6 +39,7 @@ export class BridgeMcpServer {
         process.env.GRPC_DEFAULT_SSL_ROOTS_FILE_PATH?.includes('Gemini.app')) {
       detectedAgent = 'gemini';
     }
+    this.options = options;
     this.agentId = options.agentId || process.env.AGENT_ID || detectedAgent || 'freebuff';
     this.startedAt = new Date().toISOString();
     this.instanceId = `bridge_${process.pid}_${Date.now()}`;
@@ -76,8 +77,9 @@ export class BridgeMcpServer {
     this.requestExplainer = options.requestExplainer || new RequestExplainer(this.logger);
     this.artifactStore = options.artifactStore || new ArtifactStore(this.logger);
 
-    // Single unified source of truth for tools
-    this.registry = options.toolRegistry || new ToolRegistry({ profile: options.toolProfile || options.profile });
+    // Tool registry is initialized with specified profile or defaults to 'all'
+    const defaultRegistryProfile = options.toolProfile || options.profile || 'all';
+    this.registry = options.toolRegistry || new ToolRegistry({ profile: defaultRegistryProfile });
 
     // Startup stamp for observability, version tracking, and staleness detection
     let gitHead = 'unknown';
@@ -86,8 +88,8 @@ export class BridgeMcpServer {
     } catch {}
     this.diagnostics.setStartupStamp({
       gitHead,
-      toolCount: this.registry.getToolDefinitions().length,
-      profile: this.registry.profile || 'all',
+      toolCount: this.registry.getToolDefinitions(defaultRegistryProfile).length,
+      profile: defaultRegistryProfile,
       startedAt: this.startedAt,
       pid: process.pid
     });
@@ -158,10 +160,14 @@ export class BridgeMcpServer {
       effectsLedger: this.effectsLedger
     };
 
-    // Tools list derived directly from unified registry
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: this.registry.getToolDefinitions()
-    }));
+    // Tools list derived directly from unified registry filtered by agent's tool profile policy
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const explicitAgent = this.options.agentId || process.env.AGENT_ID;
+      const profile = this.options.toolProfile || this.options.profile || (explicitAgent ? this.guard.getAgentToolProfile(this.agentId) : 'all');
+      return {
+        tools: this.registry.getToolDefinitions(profile)
+      };
+    });
 
     // Tool execution dispatched directly through unified registry
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {

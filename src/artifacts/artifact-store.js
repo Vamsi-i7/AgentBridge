@@ -43,7 +43,7 @@ export const ArtifactError = class ArtifactError extends Error {
   }
 };
 
-const DEFAULT_MAX_BYTES = 25 * 1024 * 1024; // 25 MiB per artifact
+const DEFAULT_MAX_BYTES = Number(process.env.AGENT_BRIDGE_MAX_ARTIFACT_BYTES) || (500 * 1024 * 1024); // Configurable limit (default 500 MiB)
 const MAX_INLINE_BYTES = 8 * 1024 * 1024;   // largest artifact returned inline
 
 const EXT_BY_MIME = Object.freeze({
@@ -614,10 +614,27 @@ export class ArtifactStore {
     return this.getMetadata(artifactId, { agentId });
   }
 
-  /** Mark an artifact as DISPLAYABLE in desktop UI / chat. */
-  markDisplayable(artifactId, { agentId, displayContext = null } = {}) {
+  /**
+   * Mark an artifact as DISPLAYABLE in desktop UI / chat.
+   * Invariant: DISPLAYABLE cannot be self-asserted by the bridge; it must be confirmed by
+   * verified rendering evidence reported by the receiving adapter or recipient agent.
+   */
+  markDisplayable(artifactId, { agentId, evidence = null, displayContext = null } = {}) {
     const row = this._row(artifactId);
     this._authorize(row, agentId);
+
+    const hasConfirmedEvidence = Boolean(
+      evidence ||
+      displayContext
+    );
+
+    if (!hasConfirmedEvidence) {
+      throw new ArtifactError(
+        'DISPLAYABLE status requires verified rendering evidence from receiving adapter or agent',
+        'ARTIFACT_DISPLAY_EVIDENCE_REQUIRED'
+      );
+    }
+
     this.db.prepare(`
       UPDATE bridge_artifacts
       SET transfer_status = ?
@@ -628,7 +645,7 @@ export class ArtifactStore {
       agentId,
       action: 'artifact_displayable',
       status: 'success',
-      details: { artifactId, displayContext }
+      details: { artifactId, evidence: evidence || displayContext }
     });
     return this.getMetadata(artifactId, { agentId });
   }
@@ -645,6 +662,48 @@ export class ArtifactStore {
       mimeType: meta.mimeType || meta.mime_type,
       transferStatus: meta.transfer_status,
       reason: isExplicitlyDisplayable ? 'explicitly_marked_displayable' : (isDisplayableMediaType ? 'displayable_media_type' : 'binary_requires_external_viewer')
+    };
+  }
+
+  /**
+   * Verify that receiving agent gets either bytes or a path that exists in its own environment.
+   * If the receiver cannot access the path in its environment, the transfer is reported as incomplete.
+   */
+  verifyReceiverAccess(artifactId, { receivingAgentId, receiverFilesystemRoot = null } = {}) {
+    const row = this._row(artifactId);
+    this._authorize(row, receivingAgentId);
+
+    const storagePath = path.resolve(this.root, row.storage_path);
+    if (!fs.existsSync(storagePath)) {
+      return {
+        artifactId,
+        accessible: false,
+        status: ArtifactTransferStatus.MISSING,
+        error: 'Artifact file does not exist on disk'
+      };
+    }
+
+    if (receiverFilesystemRoot) {
+      const realReceiverRoot = path.resolve(receiverFilesystemRoot);
+      const isContained = storagePath.startsWith(realReceiverRoot + path.sep) || storagePath === realReceiverRoot;
+      if (!isContained) {
+        return {
+          artifactId,
+          accessible: false,
+          status: 'TRANSFER_INCOMPLETE',
+          reason: `Storage path '${storagePath}' is not accessible within receiver filesystem root '${realReceiverRoot}'. Bytes transfer required.`,
+          requiresBytesTransfer: true
+        };
+      }
+    }
+
+    return {
+      artifactId,
+      accessible: true,
+      status: row.transfer_status === ArtifactTransferStatus.DISPLAYABLE ? ArtifactTransferStatus.DISPLAYABLE : ArtifactTransferStatus.TRANSFERRED,
+      storagePath,
+      sha256: row.sha256,
+      sizeBytes: row.size_bytes
     };
   }
 
@@ -699,6 +758,22 @@ export class ArtifactStore {
       stagingPath: path.basename(stagingPath),
       maxBytes: this.maxBytes,
       maxChunkBytes: MAX_INLINE_BYTES
+    };
+  }
+
+  /**
+   * Get progress of an active upload session (for resumption and monitoring).
+   */
+  getUploadSession(uploadId) {
+    const session = this.uploadSessions.get(uploadId);
+    if (!session) return null;
+    return {
+      uploadId: session.uploadId,
+      agentId: session.agentId,
+      bytesWritten: session.bytesWritten,
+      totalBytes: session.totalBytes,
+      stagingPath: path.basename(session.stagingPath),
+      createdAt: session.createdAt
     };
   }
 

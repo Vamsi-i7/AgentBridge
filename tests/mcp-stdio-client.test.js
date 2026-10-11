@@ -33,7 +33,7 @@ test('Real MCP stdio client handshake (official SDK)', async (t) => {
     command: process.execPath,
     args: [SERVER_ENTRY],
     cwd: path.join(__dirname, '..'),
-    env: { ...process.env, AGENT_ID: 'claude-desktop' },
+    env: { ...process.env, AGENT_ID: 'claude-desktop', AGENT_BRIDGE_TOOL_PROFILE: 'all' },
     stderr: 'pipe'
   });
 
@@ -113,7 +113,7 @@ test('Real MCP stdio client handshake (official SDK)', async (t) => {
 test('MCP stdio JSON-RPC framing survives malformed input', async (t) => {
   const child = spawn(process.execPath, [SERVER_ENTRY], {
     cwd: path.join(__dirname, '..'),
-    env: { ...process.env, AGENT_ID: 'claude-desktop' },
+    env: { ...process.env, AGENT_ID: 'claude-desktop', AGENT_BRIDGE_TOOL_PROFILE: 'all' },
     stdio: ['pipe', 'pipe', 'pipe']
   });
 

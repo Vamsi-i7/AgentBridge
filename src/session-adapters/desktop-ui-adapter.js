@@ -332,7 +332,8 @@ export class DesktopUIAdapter extends AgentSessionAdapter {
     };
   }
 
-  async waitForResponse({ requestId, timeoutMs = 15000, pollIntervalMs = 1000 }) {
+  // Default poll interval reduced from 1000ms to 50ms to eliminate return path dead time.
+  async waitForResponse({ requestId, timeoutMs = 15000, pollIntervalMs = 50 }) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       const res = await this.readResponse({ requestId });

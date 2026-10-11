@@ -2,7 +2,7 @@
  * Minimal Stable Protocol Text (Mission B)
  *
  * Requirements:
- * 1. Byte-identical custom-instruction block per agent for 100% prompt caching hits.
+ * 1. Byte-stable prefix block per agent across requests.
  * 2. Dynamic/variable content (request ID, task context, user prompt) placed strictly LAST.
  * 3. Answer only: dense, no preamble, no restating query, no conversational filler, no sign-off.
  * 4. Two-phase return: authenticated bridge_submit_task_result delivers the answer,

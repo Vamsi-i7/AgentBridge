@@ -625,8 +625,11 @@ export class TaskManager extends EventEmitter {
         `).get(taskId);
 
         if (attemptId && (epoch === null || epoch === undefined)) {
-          throw new Error(`Fencing Error: epoch token is required when attemptId is provided for task '${taskId}'.`);
+          const err = new Error(`Fenced Error: epoch token is required when attemptId is provided for task '${taskId}'.`);
+          err.code = 'FENCED_ATTEMPT_ERROR';
+          throw err;
         }
+
 
         if (epochRow && epoch !== null && epoch !== undefined && Number(epoch) !== epochRow.current_epoch) {
           const err = new Error(

@@ -13,6 +13,18 @@ export const PresenceState = Object.freeze({
 });
 
 /**
+ * Route Evidence Classification
+ * Tracks the empirical verification tier of each route.
+ * A route is declared until a probe or mock/live test proves it.
+ */
+export const RouteEvidence = Object.freeze({
+  DECLARED: 'declared',
+  PROBED: 'probed',
+  MOCK_TESTED: 'mock-tested',
+  LIVE_VERIFIED: 'live-verified'
+});
+
+/**
  * Route Types and Capabilities
  */
 export const RouteType = Object.freeze({
@@ -35,11 +47,12 @@ export const AGENT_MANIFESTS = Object.freeze({
     bundleId: 'com.openai.chat',
     appName: 'ChatGPT',
     routes: [
-      { id: 'mcp-stdio', priority: 1, type: RouteType.MCP, capabilities: ['bidirectional', 'exact_turn'] },
-      { id: 'chatgpt-local-engine', priority: 2, type: RouteType.LOCAL_ENGINE, capabilities: ['cli', 'structured_stream', 'background'] },
-      { id: 'desktop-ui-ax', priority: 3, type: RouteType.ACCESSIBILITY_UI, capabilities: ['background_window', 'fallback'] }
+      { id: 'desktop-ui-ax', priority: 1, type: RouteType.ACCESSIBILITY_UI, capabilities: ['background_window', 'native_ax'], evidence: RouteEvidence.MOCK_TESTED, backgroundCapable: 'mock-proven' },
+      { id: 'chatgpt-local-engine', priority: 2, type: RouteType.LOCAL_ENGINE, capabilities: ['cli', 'structured_stream', 'background'], evidence: RouteEvidence.MOCK_TESTED, backgroundCapable: 'mock-proven' },
+      { id: 'mcp-stdio', priority: 3, type: RouteType.MCP, capabilities: ['bidirectional', 'exact_turn'], evidence: RouteEvidence.MOCK_TESTED, backgroundCapable: 'mock-proven' },
+      { id: 'cdp-unverified', priority: 99, type: RouteType.CDP, capabilities: ['experimental'], evidence: RouteEvidence.DECLARED, backgroundCapable: 'declared', unverified: true, notes: 'ChatGPT macOS is native AppKit/Swift, not Electron. CDP requires proven debuggable webview.' }
     ],
-    fallbackChain: ['mcp-stdio', 'chatgpt-local-engine', 'desktop-ui-ax'],
+    fallbackChain: ['desktop-ui-ax', 'chatgpt-local-engine', 'mcp-stdio'],
     maxConcurrency: 1,
     headlessCliSupported: true,
     cdpSupported: false
@@ -51,9 +64,9 @@ export const AGENT_MANIFESTS = Object.freeze({
     bundleId: 'com.anthropic.claudefordesktop',
     appName: 'Claude',
     routes: [
-      { id: 'mcp-stdio', priority: 1, type: RouteType.MCP, capabilities: ['bidirectional', 'exact_turn'] },
-      { id: 'cdp-electron', priority: 2, type: RouteType.CDP, capabilities: ['dom_inject', 'network_stream', 'background_minimized'] },
-      { id: 'desktop-ui-ax', priority: 3, type: RouteType.ACCESSIBILITY_UI, capabilities: ['background_window', 'fallback'] }
+      { id: 'mcp-stdio', priority: 1, type: RouteType.MCP, capabilities: ['bidirectional', 'exact_turn'], evidence: RouteEvidence.MOCK_TESTED, backgroundCapable: 'mock-proven' },
+      { id: 'cdp-electron', priority: 2, type: RouteType.CDP, capabilities: ['dom_inject', 'network_stream', 'background_minimized'], evidence: RouteEvidence.MOCK_TESTED, backgroundCapable: 'mock-proven' },
+      { id: 'desktop-ui-ax', priority: 3, type: RouteType.ACCESSIBILITY_UI, capabilities: ['background_window', 'fallback'], evidence: RouteEvidence.MOCK_TESTED, backgroundCapable: 'mock-proven' }
     ],
     fallbackChain: ['mcp-stdio', 'cdp-electron', 'desktop-ui-ax'],
     maxConcurrency: 1,
@@ -67,8 +80,8 @@ export const AGENT_MANIFESTS = Object.freeze({
     bundleId: 'com.google.antigravity',
     appName: 'Antigravity',
     routes: [
-      { id: 'mcp-stdio', priority: 1, type: RouteType.MCP, capabilities: ['bidirectional', 'exact_turn', 'in_process'] },
-      { id: 'cdp-electron', priority: 2, type: RouteType.CDP, capabilities: ['dom_inject', 'background'] }
+      { id: 'mcp-stdio', priority: 1, type: RouteType.MCP, capabilities: ['bidirectional', 'exact_turn', 'in_process'], evidence: RouteEvidence.MOCK_TESTED, backgroundCapable: 'mock-proven' },
+      { id: 'cdp-electron', priority: 2, type: RouteType.CDP, capabilities: ['dom_inject', 'background'], evidence: RouteEvidence.MOCK_TESTED, backgroundCapable: 'mock-proven' }
     ],
     fallbackChain: ['mcp-stdio', 'cdp-electron'],
     maxConcurrency: 4,
@@ -82,9 +95,9 @@ export const AGENT_MANIFESTS = Object.freeze({
     bundleId: 'com.google.gemini',
     appName: 'Gemini',
     routes: [
-      { id: 'mcp-stdio', priority: 1, type: RouteType.MCP, capabilities: ['bidirectional', 'exact_turn'] },
-      { id: 'headless-cli', priority: 2, type: RouteType.HEADLESS_CLI, capabilities: ['cli_print', 'exact_turn', 'background'] },
-      { id: 'desktop-ui-ax', priority: 3, type: RouteType.ACCESSIBILITY_UI, capabilities: ['background_window', 'fallback'] }
+      { id: 'mcp-stdio', priority: 1, type: RouteType.MCP, capabilities: ['bidirectional', 'exact_turn'], evidence: RouteEvidence.MOCK_TESTED, backgroundCapable: 'mock-proven' },
+      { id: 'headless-cli', priority: 2, type: RouteType.HEADLESS_CLI, capabilities: ['cli_print', 'exact_turn', 'background'], evidence: RouteEvidence.MOCK_TESTED, backgroundCapable: 'mock-proven' },
+      { id: 'desktop-ui-ax', priority: 3, type: RouteType.ACCESSIBILITY_UI, capabilities: ['background_window', 'fallback'], evidence: RouteEvidence.MOCK_TESTED, backgroundCapable: 'mock-proven' }
     ],
     fallbackChain: ['mcp-stdio', 'headless-cli', 'desktop-ui-ax'],
     maxConcurrency: 2,
@@ -98,7 +111,7 @@ export const AGENT_MANIFESTS = Object.freeze({
     bundleId: null,
     appName: null,
     routes: [
-      { id: 'mcp-stdio', priority: 1, type: RouteType.MCP, capabilities: ['bidirectional', 'exact_turn', 'in_process'] }
+      { id: 'mcp-stdio', priority: 1, type: RouteType.MCP, capabilities: ['bidirectional', 'exact_turn', 'in_process'], evidence: RouteEvidence.MOCK_TESTED, backgroundCapable: 'mock-proven' }
     ],
     fallbackChain: ['mcp-stdio'],
     maxConcurrency: 8,

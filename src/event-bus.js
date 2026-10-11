@@ -512,7 +512,9 @@ export class EventBus extends EventEmitter {
         response: row.response,
         error: row.error,
         completedAt: row.completed_at,
-        completionEvidence: row.completion_evidence || null
+        completionEvidence: row.completion_evidence || null,
+        attemptId: row.attempt_id || null,
+        epoch: (row.epoch !== null && row.epoch !== undefined) ? Number(row.epoch) : null
       };
     } catch {
       return null;
@@ -534,11 +536,21 @@ export class EventBus extends EventEmitter {
     const settled = this._readTerminalRequest(requestId);
     if (!settled) return false; // Not terminal yet: keep waiting for the real result.
 
-    // Remove the whole set first so a re-entrant notification cannot double-resolve.
-    this.responseWaiters.delete(requestId);
-
     const now = Date.now();
-    for (const waiter of waiters) {
+    let anySettled = false;
+
+    // Settle matching waiters; filter out any waiters whose attemptId or epoch does not match
+    for (const waiter of Array.from(waiters)) {
+      if (waiter.attemptId && settled.attemptId && waiter.attemptId !== settled.attemptId) {
+        // Attempt mismatch: do not settle this waiter with a result from another attempt
+        continue;
+      }
+      if (waiter.epoch !== null && waiter.epoch !== undefined && settled.epoch !== null && settled.epoch !== undefined && Number(waiter.epoch) !== Number(settled.epoch)) {
+        // Epoch mismatch: do not settle this waiter with a result from another epoch
+        continue;
+      }
+
+      waiters.delete(waiter);
       if (waiter.timer) clearTimeout(waiter.timer);
 
       if (this.tracer) {
@@ -554,8 +566,13 @@ export class EventBus extends EventEmitter {
       }
 
       waiter.resolve({ ...settled, source, waiterLatencyMs: now - (waiter.registeredAt || now) });
+      anySettled = true;
     }
-    return true;
+
+    if (waiters.size === 0) {
+      this.responseWaiters.delete(requestId);
+    }
+    return anySettled;
   }
 
   /**
@@ -566,7 +583,7 @@ export class EventBus extends EventEmitter {
     const opts = (typeof reqIdOrOpts === 'string')
       ? { requestId: reqIdOrOpts, ...maybeOpts }
       : (reqIdOrOpts || {});
-    const { requestId, agentId = null, taskId = null, attemptId = null, routeId = null, timeoutMs = 30000 } = opts;
+    const { requestId, agentId = null, taskId = null, attemptId = null, routeId = null, timeoutMs = 30000, epoch = null } = opts;
     if (!requestId) throw new Error('requestId is required to wait for response');
 
     if (this.isClosed) {
@@ -609,6 +626,7 @@ export class EventBus extends EventEmitter {
         agentId,
         taskId,
         attemptId,
+        epoch: epoch !== null && epoch !== undefined ? Number(epoch) : null,
         routeId,
         registeredAt: Date.now()
       };

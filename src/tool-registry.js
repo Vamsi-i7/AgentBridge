@@ -6,6 +6,7 @@ import { AttemptLedger } from './attempts/attempt-ledger.js';
 import { ArtifactStore, ArtifactError } from './artifacts/artifact-store.js';
 import { KnowledgeStore } from './memory/knowledge-store.js';
 import { SkillsManager } from './skills/skills-manager.js';
+import { SignedSkillRegistry } from './skills/skill-registry.js';
 
 // Lazily-created per-context artifact store, so every transport (stdio MCP, HTTP
 // MCP, plugins) can store/retrieve real bytes without each wiring its own.
@@ -99,6 +100,20 @@ export const SKILLS_TOOL_DEFINITIONS = Object.freeze([
       },
       required: ['query']
     }
+  },
+  {
+    name: 'bridge_skill_load',
+    description: 'Fetch skill body on demand by content hash, with hash cache deduplication.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Skill name' },
+        contentHash: { type: 'string', description: 'Client cached SHA-256 hash (optional)' },
+        profile: { type: 'string', description: 'Agent profile (optional, defaults to default)' },
+        agentId: { type: 'string' }
+      },
+      required: ['name']
+    }
   }
 ]);
 
@@ -152,7 +167,8 @@ export const PROFILE_TOOLS = Object.freeze({
     'bridge_list_skills',
     'bridge_get_skill',
     'bridge_get_skill_resource',
-    'bridge_search_skills'
+    'bridge_search_skills',
+    'bridge_skill_load'
   ]),
   minimal: Object.freeze([
     'bridge_ping',
@@ -310,9 +326,20 @@ export class ToolRegistry {
           const { RequestTracer } = await import('./diagnostics/request-tracer.js');
           const tracer = ctx.tracer || ctx.mailbox?.tracer || (ctx.db || ctx.audit?.db || ctx.logger?.db ? new RequestTracer({ db: ctx.db || ctx.audit?.db || ctx.logger?.db }) : null);
           if (!tracer) throw new Error('RequestTracer not available');
+          const callerId = ctx.isPrivileged ? null : (ctx.agentId || args.agentId);
           const ledger = tracer.getLedger(args.requestId);
           if (!ledger) {
             return { found: false, requestId: args.requestId, error: 'Ledger not found' };
+          }
+          if (callerId && !ctx.isPrivileged) {
+            const normCaller = String(callerId).trim().toLowerCase();
+            const fromNorm = String(ledger.fromAgent || '').trim().toLowerCase();
+            const toNorm = String(ledger.toAgent || '').trim().toLowerCase();
+            if (normCaller !== fromNorm && normCaller !== toNorm) {
+              const unauthErr = new Error(`Unauthorized: agent '${callerId}' is not authorized to inspect ledger for request '${args.requestId}'`);
+              unauthErr.code = 'UNAUTHORIZED_LEDGER_ACCESS';
+              throw unauthErr;
+            }
           }
           return {
             found: true,
@@ -335,8 +362,25 @@ export class ToolRegistry {
           if (!eventBus) throw new Error('EventBus not available in execution context');
           const outcome = await eventBus.waitForResponse({
             requestId: args.requestId,
+            agentId: ctx.agentId || args.agentId || null,
+            attemptId: args.attemptId || ctx.attemptId || null,
+            epoch: args.epoch !== undefined ? args.epoch : (ctx.epoch !== undefined ? ctx.epoch : null),
             timeoutMs
           });
+
+          // Commit to bridge user display immediately upon resolution
+          const { defaultDisplayManager } = await import('./display/bridge-display-manager.js');
+          const displayMgr = ctx.displayManager || defaultDisplayManager;
+          if (outcome && (outcome.status === 'completed' || outcome.response)) {
+            await displayMgr.commitResult(args.requestId, outcome, {
+              fromAgent: outcome.fromAgent || ctx.agentId || null
+            });
+          }
+
+          if (args.compact !== false && outcome && outcome.status === 'completed') {
+            return displayMgr.formatToolResult(outcome, { casStore: ctx.casStore });
+          }
+
           return outcome;
         }
       };
@@ -350,16 +394,35 @@ export class ToolRegistry {
           const slice = cas.getSlice(args.ref, args.offset || 0, args.length || 4000);
           if (!slice) {
             if (ctx.artifactStore) {
+              const callerAgent = ctx.agentId || args.agentId;
               try {
                 return ctx.artifactStore.readChunk(args.ref, {
+                  agentId: callerAgent,
                   offset: args.offset || 0,
                   length: args.length || 4000
                 });
-              } catch {}
+              } catch (artErr) {
+                if (artErr?.code === 'ARTIFACT_UNAUTHORIZED') {
+                  throw artErr;
+                }
+              }
             }
             return { found: false, error: `Content reference '${args.ref}' not found in CAS store` };
           }
           return { found: true, ...slice };
+        }
+      };
+    }
+    if (!tool && resolvedName === 'bridge_get_protocol_snippet') {
+      tool = {
+        name: 'bridge_get_protocol_snippet',
+        handler: async (args, ctx) => {
+          const { STABLE_PROTOCOL_INSTRUCTIONS } = await import('./protocol/stable-protocol.js');
+          return {
+            agentId: args.agentId || ctx.agentId || 'all',
+            snippet: STABLE_PROTOCOL_INSTRUCTIONS,
+            instructions: 'Paste this snippet into the agent custom instructions / system instructions.'
+          };
         }
       };
     }
@@ -411,6 +474,20 @@ export class ToolRegistry {
             source: args.source,
             riskTier: args.riskTier,
             limit: args.limit
+          });
+        }
+      };
+    }
+    if (!tool && resolvedName === 'bridge_skill_load') {
+      tool = {
+        name: 'bridge_skill_load',
+        handler: async (args, ctx) => {
+          const sm = resolveSkillsManager(ctx);
+          const reg = ctx.signedSkillRegistry || new SignedSkillRegistry({ skillsManager: sm, auditLogger: ctx.logger });
+          return reg.loadSkill(args.name, {
+            agentId: args.agentId || ctx.agentId || 'anonymous',
+            agentProfile: args.profile || 'default',
+            clientHash: args.contentHash || null
           });
         }
       };
@@ -1326,11 +1403,29 @@ export class ToolRegistry {
           context: { type: 'string' },
           parentTaskId: { type: 'string' },
           priority: { type: 'string', enum: ['low', 'normal', 'high', 'urgent'] },
-          dependencies: { type: 'array', items: { type: 'string' } }
+          dependencies: { type: 'array', items: { type: 'string' } },
+          hops: { type: 'array', items: { type: 'string' }, description: 'Multi-hop forwarding sequence of agents' }
         },
         required: ['fromAgent', 'toAgent', 'title', 'instructions']
       },
-      handler: async (args, ctx) => ctx.mailbox.delegateTask(args)
+      handler: async (args, ctx) => {
+        if (Array.isArray(args.hops) && args.hops.length > 1) {
+          const { MultiHopRouter } = await import('./control-plane/multi-hop-router.js');
+          const router = ctx.multiHopRouter || new MultiHopRouter({
+            mailboxHub: ctx.mailbox,
+            taskManager: ctx.mailbox?.tasks,
+            eventBus: ctx.eventBus || ctx.mailbox?.eventBus,
+            guard: ctx.permissionGuard
+          });
+          return router.executeHopChain({
+            hops: args.hops,
+            initialInput: args.instructions || args.title,
+            initiatorAgent: args.fromAgent,
+            parentRequestId: args.requestId
+          });
+        }
+        return ctx.mailbox.delegateTask(args);
+      }
     });
 
     this.registerTool({

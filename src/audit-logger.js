@@ -115,7 +115,7 @@ export class AuditLogger {
     const timestamp = new Date().toISOString();
     stmt.run(
       timestamp,
-      agentId,
+      agentId || null,
       action,
       targetPath,
       command,
