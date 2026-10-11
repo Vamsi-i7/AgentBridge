@@ -2,23 +2,51 @@
 
 **Refreshed:** 2026-10-11
 **Repository:** `/Users/jayanthpranaykonada/agent-bridge`  
-**HEAD (baseline):** `3c7defd7c830028721f94bb4788ab2ce8ac213d5`
+**HEAD (baseline):** `f2b7be595bb1d971a69764d6b8b8b6b5e53e8373`
 **Branch:** `main`
-**Tree:** Working tree preserves uncommitted remediation fixes in 6 source files and 1 verification test file. Zia untouched.
-**Live Control Plane:** Bound to `127.0.0.1:8765` (PID `70514` verified matching HEAD `3c7defd7c830028721f94bb4788ab2ce8ac213d5`). Both `/mcp` and `/api/mcp/call` active in full parity with 74 tools served.
+**Tree:** Working tree preserves uncommitted Mission 4B hardening and truthful completion fixes. Zia untouched (clean 0 bytes).
+**Active Tools:** 81 tools registered in `src/tool-registry.js`.
 
-This is the authoritative implementation handoff for Agent Bridge. It supersedes older notes and reflects the ground-truth state verified against live processes and providers.
+This is the authoritative implementation handoff for Agent Bridge. It supersedes older notes and reflects the ground-truth state verified against live processes and test suites.
 
 ## Verification
 
-Full regression suite (`npm test` → `node --test --test-concurrency=1 tests/*.test.js`), latest run under Mission 5 baseline:
+Full regression suite (`npm test` → `node --test tests/*.test.js`), latest run under Mission 4B:
 
-- tests: **794**
-- pass: **786**
+- tests: **1052**
+- pass: **1044**
 - fail: **0**
 - skipped: **8** (explicitly live-gated: live model quota/credentials requiring explicit opt-in)
-- duration: **25.64s**
+- duration: **42.47s**
 - exit code: **0**
+
+## Mission 4B Hardening & Truthful Completion Architecture
+
+### 1. Security Hardening & PURE Tool Guard (Stage 1)
+- Complete audit of all 81 tools: every tool classified as `PURE` or `EFFECTFUL`.
+- Enforced cross-agent authorization guard on pure tools returning cross-agent state (`bridge_read_file`, `bridge_get_response`, `bridge_get_request_status`, `bridge_check_inbox`, `bridge_get_task_status`, etc.).
+- Default fail-safe configuration: `ZIA_WRITE_LOCKED: true`, `ALLOWED_ROOTS` strictly excludes `/Users/jayanthpranaykonada/Zia` and denies path traversal, symlink escapes, and command execution targeting Zia.
+
+### 2. Recovery & Worker Fencing (Stage 2)
+- Added unreferenced periodic recovery timer (`startRecoveryTimer(2000)` / `stopRecoveryTimer()`) and startup sweep (`runRecoverySweep()`) in `src/mailbox-hub.js`.
+- Unified lease recovery across requests and tasks in `TaskManager.recoverExpiredLeases()`.
+- Implemented `DELIVERY_UNCERTAIN` state preventing blind re-injection for non-idempotent requests when a worker crashes after prompt dispatch.
+- Real SIGKILL worker crash test created (`tests/crash-recovery-kill9.test.js`) verifying monotonic epoch advancement, worker fencing, late response quarantining, and exactly one terminal settlement.
+
+### 3. Truthful & Fast Completion (Stage 3)
+- Tier Map: 4-tier completion confidence (`EXPLICIT_END_OF_TURN`, `INDICATOR_BASED`, `STABILITY_HEURISTIC`, `AUTHENTICATED_SUBMIT`) with monotonic escalation (`CONFIDENCE_RANK`: 1, 2, 3, 4).
+- Protocol Suffix: Desktop workers append `[Agent Bridge Protocol: {"requestId", "attemptId", "epoch", "nonce"}]` to direct prompts.
+- Fast-Path Direct Settlement: Authenticated submissions race UI observation, trigger instant observation cancellation (`session.cancel(requestId)`), and settle without heuristic delay.
+- Measured Counters: Removed all tautological literal `0` counters. `_resolveModelCounters` ties model calls and regeneration tokens to `TokenAccountant` metrics or reports explicit `null` with reasons (`UNMEASURED_NO_TOKEN_METRICS`).
+- Compact MCP Result: `bridge_ask_agent` defaults to compact output shape (`{ requestId, status, response, error, completionConfidence, responseId, untrustedData: true }`) with `includeFullTrace: true` opt-in.
+- Monotonic Timings: Verified monotonic stage timings in `RequestTracer` (`performance.now()`).
+
+### 4. Wiring, Extensibility & Capability Reporting (Stage 4)
+- Truthful Capability Reporting: Interactive-only desktop clients (Claude Desktop) report `autonomousModelWake: 'unsupported; interactive client only'`.
+- Response Digests: Pending work notices delivered to interactive clients via response digests during active turns.
+- Single Source of Agent Identity: `registerAgentManifest(manifest)` in `src/capabilities/agent-manifest.js` enables pure manifest onboarding of new agents without core router modifications.
+- Reachability Audit: Full audit of standalone modules (`runBridgeDoctor`, `BackupManager`, `RetentionPruner`).
+
 
 ## Runtime composition
 

@@ -186,7 +186,7 @@ test('Memory with Provenance & Lifecycle Validity Suite', async (t) => {
 
   await t.test('7. ToolRegistry integration: bridge_store_knowledge, bridge_search_knowledge, bridge_get_knowledge execute with status & validity', async () => {
     const registry = new ToolRegistry();
-    const ctx = { logger, db: logger.db };
+    const ctx = { agentId: 'system', logger, db: logger.db };
 
     // Store via ToolRegistry
     const storeRes = await registry.executeTool('bridge_store_knowledge', {

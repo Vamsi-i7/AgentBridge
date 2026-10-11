@@ -186,7 +186,7 @@ test('Mission B — Minimum Token Surface Suite', async (t) => {
       ref: stored.hash,
       offset: 5,
       length: 10
-    }, { casStore: env.cas });
+    }, { agentId: 'freebuff', casStore: env.cas });
 
     assert.strictEqual(sliceResult.found, true);
     assert.strictEqual(sliceResult.slice, content.slice(5, 15));
@@ -204,7 +204,7 @@ test('Mission B — Minimum Token Surface Suite', async (t) => {
     const waitPromise = env.registry.executeTool('bridge_wait_for_response', {
       requestId: reqId,
       timeoutMs: 5000
-    }, { mailbox: env.mailbox, eventBus: env.eventBus });
+    }, { agentId: 'chatgpt-desktop', mailbox: env.mailbox, eventBus: env.eventBus });
 
     // Commit terminal row and publish event via eventBus
     setTimeout(() => {

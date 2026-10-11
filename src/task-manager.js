@@ -135,8 +135,12 @@ export class TaskManager extends EventEmitter {
   createTask({
     fromAgent,
     toAgent,
+    initiator,
+    assignedTo,
+    customTaskId,
     title,
     instructions,
+    description,
     context = null,
     parentTaskId = null,
     priority = 'normal',
@@ -148,6 +152,10 @@ export class TaskManager extends EventEmitter {
     emitEvent = true,
     dedupKey = null
   }) {
+    const effectiveFrom = fromAgent || initiator || 'system';
+    const effectiveTo = toAgent || assignedTo || null;
+    const effectiveInstructions = instructions || description || '';
+
     if (parentTaskId && this.maxDelegationDepth > 0) {
       const depth = this._delegationDepth(parentTaskId);
       if (depth >= this.maxDelegationDepth) {
@@ -172,7 +180,7 @@ export class TaskManager extends EventEmitter {
       } catch {}
     }
 
-    const id = `task_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    const id = customTaskId || `task_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const timestamp = new Date().toISOString();
     const depsJson = Array.isArray(dependencies) ? JSON.stringify(dependencies) : null;
     const initialStatus = (dependencies && dependencies.length > 0) ? 'blocked' : 'pending';
@@ -181,10 +189,12 @@ export class TaskManager extends EventEmitter {
     const task = {
       id,
       parentTaskId,
-      creator: fromAgent,
-      assignee: toAgent,
+      creator: effectiveFrom,
+      fromAgent: effectiveFrom,
+      assignee: effectiveTo,
+      toAgent: effectiveTo,
       title,
-      instructions,
+      instructions: effectiveInstructions,
       status: initialStatus,
       priority,
       createdAt: timestamp,
@@ -219,10 +229,10 @@ export class TaskManager extends EventEmitter {
           id,
           timestamp,
           timestamp,
-          fromAgent ?? null,
-          toAgent ?? null,
+          effectiveFrom,
+          effectiveTo,
           title ?? null,
-          instructions ?? null,
+          effectiveInstructions,
           resolvedContext ?? null,
           initialStatus ?? null,
           parentTaskId ?? null,
@@ -244,19 +254,19 @@ export class TaskManager extends EventEmitter {
       }
 
       this.logger?.log({
-        agentId: fromAgent,
+        agentId: effectiveFrom || 'system',
         action: 'delegate_task',
         status: 'success',
-        details: { taskId: id, toAgent, title, priority, parentTaskId, dedupKey: effectiveDedupKey }
+        details: { taskId: id, toAgent: effectiveTo, title, priority, parentTaskId, dedupKey: effectiveDedupKey }
       });
 
       if (emitEvent && stageEventFn) {
         stageEventFn({
           type: 'task_created',
-          agentId: toAgent,
-          fromAgent,
+          agentId: effectiveTo || null,
+          fromAgent: effectiveFrom || null,
           conversationId: conversationId || `conv_task_${id}`,
-          requestId,
+          requestId: requestId || null,
           taskId: id,
           status: initialStatus,
           payload: {
@@ -411,6 +421,27 @@ export class TaskManager extends EventEmitter {
     return claimedTask;
   }
 
+  submitTaskResult(taskId, agentId, result, opts = {}) {
+    if (this.mailboxHub?.submitTaskResult) {
+      return this.mailboxHub.submitTaskResult({
+        taskId,
+        agentId,
+        result,
+        status: opts?.status || 'completed',
+        error: opts?.error || null,
+        attemptId: opts?.attemptId || null,
+        epoch: opts?.epoch || null,
+        completionConfidence: opts?.completionConfidence || null,
+        observedSignals: opts?.observedSignals || null
+      });
+    }
+    const now = new Date().toISOString();
+    const status = opts?.status || 'completed';
+    const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+    this.db.prepare(`UPDATE tasks SET status = ?, result = ?, updated_at = ? WHERE id = ?`).run(status, resultStr, now, taskId);
+    return this.getTask(taskId, false);
+  }
+
   recoverExpiredTasks(agentId = null) {
     const params = [];
     let query = `SELECT * FROM tasks WHERE status IN ('claimed', 'in_progress') AND started_at IS NOT NULL`;
@@ -462,6 +493,18 @@ export class TaskManager extends EventEmitter {
     }
 
     return recovered;
+  }
+
+  /**
+   * Recovers expired task leases and associated attempts.
+   */
+  recoverExpiredLeases(agentId = null) {
+    if (this.attempts?.recoverExpiredAttempts) {
+      try {
+        this.attempts.recoverExpiredAttempts();
+      } catch {}
+    }
+    return this.recoverExpiredTasks(agentId);
   }
 
   /**
@@ -815,7 +858,11 @@ export class TaskManager extends EventEmitter {
     });
   }
 
-  cancelTask({ taskId, agentId, reason = 'Cancelled by user or system' }) {
+  cancelTask(arg1, arg2, arg3) {
+    const opts = (typeof arg1 === 'string')
+      ? { taskId: arg1, reason: arg2, agentId: arg3 }
+      : (arg1 || {});
+    const { taskId, agentId, reason = 'Cancelled by user or system' } = opts;
     return this.updateTaskStatus({
       taskId,
       agentId,

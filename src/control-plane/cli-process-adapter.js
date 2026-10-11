@@ -91,18 +91,10 @@ export class CliProcessAdapter extends BaseRouteAdapter {
   /**
    * Dispatch request to CLI process and wait for completion.
    */
+  /**
+   * Dispatch request to CLI process and wait for completion.
+   */
   async send(request) {
-    const probeRes = await this.probe();
-    if (!probeRes.ready) {
-      return {
-        outcome: 'FAILED',
-        accepted: false,
-        routeId: this.routeId,
-        stage: DeliveryStage.FAILED,
-        reason: probeRes.reason
-      };
-    }
-
     const {
       requestId,
       prompt = request.message || '',
@@ -114,15 +106,95 @@ export class CliProcessAdapter extends BaseRouteAdapter {
     if (!requestId) throw new Error('requestId is required for CLI dispatch');
 
     const spawnArgs = [...this.baseArgs, ...(args.length > 0 ? args : (this.inputMode === 'arg' ? [prompt] : []))];
+    const startTime = Date.now();
+    const tokensIn = Math.ceil(Buffer.byteLength(prompt, 'utf8') / 4);
+
+    // Register active process record SYNCHRONOUSLY before any await to eliminate spawn races
+    const record = {
+      child: null,
+      pid: null,
+      requestId,
+      startTime,
+      tokensIn,
+      tokensOut: 0,
+      accumulatedText: '',
+      timer: null,
+      cancelled: false,
+      resolve: null
+    };
+
+    if (timeoutMs > 0) {
+      record.timer = setTimeout(() => {
+        this.cancel(requestId);
+      }, timeoutMs);
+    }
+
+    this.activeProcesses.set(requestId, record);
+
+    const probeRes = await this.probe();
+    if (record.cancelled) {
+      this.activeProcesses.delete(requestId);
+      return {
+        outcome: 'CANCELLED',
+        requestId,
+        exitCode: null,
+        signal: 'SIGTERM'
+      };
+    }
+
+    if (!probeRes.ready) {
+      this.activeProcesses.delete(requestId);
+      return {
+        outcome: 'FAILED',
+        accepted: false,
+        routeId: this.routeId,
+        stage: DeliveryStage.FAILED,
+        reason: probeRes.reason
+      };
+    }
 
     return new Promise((resolve) => {
+      record.resolve = resolve;
+      if (record.cancelled) {
+        this.activeProcesses.delete(requestId);
+        return resolve({
+          outcome: 'CANCELLED',
+          requestId,
+          exitCode: null,
+          signal: 'SIGTERM'
+        });
+      }
+
       let child;
       try {
+        const ALLOWED_ENV_VARS = [
+          'PATH',
+          'HOME',
+          'LANG',
+          'LC_ALL',
+          'LC_CTYPE',
+          'TERM',
+          'TMPDIR',
+          'USER',
+          'SHELL'
+        ];
+        const scrubbedEnv = {};
+        for (const key of ALLOWED_ENV_VARS) {
+          if (process.env[key] !== undefined) {
+            scrubbedEnv[key] = process.env[key];
+          }
+        }
+        if (this.options.env && typeof this.options.env === 'object') {
+          Object.assign(scrubbedEnv, this.options.env);
+        }
+
         child = spawn(this.command, spawnArgs, {
           stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...process.env, ...(this.options.env || {}) }
+          detached: process.platform !== 'win32',
+          env: scrubbedEnv
         });
       } catch (spawnErr) {
+        this.activeProcesses.delete(requestId);
         return resolve({
           outcome: 'FAILED',
           error: spawnErr.message,
@@ -130,29 +202,8 @@ export class CliProcessAdapter extends BaseRouteAdapter {
         });
       }
 
-      const startTime = Date.now();
-      const tokensIn = Math.ceil(Buffer.byteLength(prompt, 'utf8') / 4);
-
-      const record = {
-        child,
-        pid: child.pid,
-        requestId,
-        startTime,
-        tokensIn,
-        tokensOut: 0,
-        accumulatedText: '',
-        timer: null,
-        cancelled: false,
-        resolve
-      };
-
-      if (timeoutMs > 0) {
-        record.timer = setTimeout(() => {
-          this.cancel(requestId);
-        }, timeoutMs);
-      }
-
-      this.activeProcesses.set(requestId, record);
+      record.child = child;
+      record.pid = child.pid;
 
       let stdoutBuffer = '';
       let stderrBuffer = '';
@@ -226,7 +277,7 @@ export class CliProcessAdapter extends BaseRouteAdapter {
             requestId,
             response: stdoutBuffer.trim(),
             completionConfidence: 'EXPLICIT_END_OF_TURN',
-            evidence: CompletionEvidenceTier.NETWORK_END_OF_STREAM,
+            evidence: CompletionEvidenceTier.PROCESS_EXIT,
             durationMs,
             usage
           });
@@ -257,28 +308,48 @@ export class CliProcessAdapter extends BaseRouteAdapter {
 
   /**
    * Cancel in-flight CLI task by terminating process tree.
+   * Deterministic synchronous resolution, no retry loops.
    */
   async cancel(requestId) {
-    let record = this.activeProcesses.get(requestId);
-    if (!record) {
-      for (let i = 0; i < 5; i++) {
-        await new Promise(r => setTimeout(r, 20));
-        record = this.activeProcesses.get(requestId);
-        if (record) break;
-      }
-    }
+    const record = this.activeProcesses.get(requestId);
     if (!record) return { cancelled: false, reason: 'Request not found or already completed' };
 
     record.cancelled = true;
     if (record.timer) clearTimeout(record.timer);
 
-    try {
-      // Kill child process directly and cleanly
-      record.child.kill('SIGTERM');
+    const pid = record.pid;
+    if (pid) {
+      const killGroup = (sig) => {
+        try {
+          if (process.platform !== 'win32') {
+            process.kill(-pid, sig);
+          } else {
+            process.kill(pid, sig);
+          }
+        } catch {
+          try {
+            if (record.child && !record.child.killed) record.child.kill(sig);
+          } catch {}
+        }
+      };
+
+      killGroup('SIGTERM');
       setTimeout(() => {
-        try { record.child.kill('SIGKILL'); } catch {}
-      }, 200);
-    } catch {}
+        killGroup('SIGKILL');
+      }, 200).unref();
+    } else if (record.child) {
+      try { record.child.kill('SIGTERM'); } catch {}
+    }
+
+    if (record.resolve) {
+      record.resolve({
+        outcome: 'CANCELLED',
+        requestId,
+        exitCode: null,
+        signal: 'SIGTERM'
+      });
+      this.activeProcesses.delete(requestId);
+    }
 
     return {
       cancelled: true,

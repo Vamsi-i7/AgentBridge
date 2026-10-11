@@ -125,4 +125,46 @@ test('Mission J: Command Center Dashboard Suite [TEST-PROVEN]', async (t) => {
     // 50 event broadcasts must take < 5ms total (< 0.1ms each)
     assert.ok(elapsed < 10, `Event dispatch took ${elapsed}ms, must be < 10ms`);
   });
+
+  // 8. F-011/F-012/F-013 Hardening
+  await t.test('8. Random per-run token generated when none provided', () => {
+    const defaultServer1 = new DashboardServer();
+    const defaultServer2 = new DashboardServer();
+    assert.ok(defaultServer1.authToken.length >= 32, 'Token must be cryptographically long');
+    assert.notEqual(defaultServer1.authToken, 'secret-operator-token', 'Never use hardcoded default token');
+    assert.notEqual(defaultServer1.authToken, defaultServer2.authToken, 'Tokens must be random per-run');
+  });
+
+  await t.test('9. DNS rebinding protection: non-loopback Host header rejected with 403', async () => {
+    const http = await import('node:http');
+    const resStatus = await new Promise((resolve, reject) => {
+      const req = http.request({
+        host: '127.0.0.1',
+        port: TEST_PORT,
+        path: '/api/tokens',
+        method: 'GET',
+        headers: {
+          Host: 'evil.attacker.com',
+          Authorization: `Bearer ${AUTH_TOKEN}`
+        }
+      }, (res) => {
+        resolve(res.statusCode);
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    assert.equal(resStatus, 403);
+  });
+
+  await t.test('10. CSRF defense: Cross-origin Origin header rejected with 403', async () => {
+    const res = await fetch(`${baseUrl}/api/tokens`, {
+      headers: {
+        Origin: 'http://malicious-website.com',
+        Authorization: `Bearer ${AUTH_TOKEN}`
+      }
+    });
+    assert.equal(res.status, 403);
+    const body = await res.json();
+    assert.match(body.error, /Cross-origin requests are forbidden/);
+  });
 });

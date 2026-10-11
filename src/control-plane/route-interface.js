@@ -1,19 +1,40 @@
 import { EventEmitter } from 'node:events';
 
 /**
- * Standard Completion Evidence Tiers
- * Priority order:
- * 1. AUTHENTICATED_SUBMIT (bridge_submit_task_result with matching nonce/epoch)
- * 2. NETWORK_END_OF_STREAM (CDP / HTTP stream termination)
- * 3. INDICATOR_BASED (UI stop-generation element gone + idle)
- * 4. STABILITY_HEURISTIC (Stable-text fallback, marked low confidence)
+ * Standard Completion Evidence Tiers (Mission 4: Honest Completion Tiers)
+ * Strict confidence ordering:
+ * 1. AUTHENTICATED_SUBMIT: Only via bridge_submit_task_result with matching nonce, attempt and epoch
+ * 2. NETWORK_END_OF_STREAM: CDP or HTTP transport-level stream closed cleanly
+ * 3. PROCESS_EXIT: Headless CLI process exited with status code 0
+ * 4. A2A_COMPLETION: Agent2Agent protocol task completion handshake confirmed
+ * 5. UI_STOP_IDLE: Desktop UI stop-generation element disappeared and composer returned to idle
+ * 6. STABILITY_HEURISTIC: Polled response text stabilized over consecutive intervals (LOW confidence, always visible)
  */
 export const CompletionEvidenceTier = Object.freeze({
   AUTHENTICATED_SUBMIT: 'AUTHENTICATED_SUBMIT',
   NETWORK_END_OF_STREAM: 'NETWORK_END_OF_STREAM',
-  INDICATOR_BASED: 'INDICATOR_BASED',
-  STABILITY_HEURISTIC: 'STABILITY_HEURISTIC'
+  PROCESS_EXIT: 'PROCESS_EXIT',
+  A2A_COMPLETION: 'A2A_COMPLETION',
+  UI_STOP_IDLE: 'UI_STOP_IDLE',
+  STABILITY_HEURISTIC: 'STABILITY_HEURISTIC',
+  // Backward-compatibility aliases
+  INDICATOR_BASED: 'UI_STOP_IDLE',
+  MCP_AUTHENTICATED_SUBMIT: 'AUTHENTICATED_SUBMIT'
 });
+
+export const CompletionTierConfidence = Object.freeze({
+  AUTHENTICATED_SUBMIT: { confidence: 'high', score: 1.0, description: 'Cryptographic V2 nonce and epoch verified' },
+  NETWORK_END_OF_STREAM: { confidence: 'high', score: 0.9, description: 'CDP/HTTP transport stream ended' },
+  PROCESS_EXIT: { confidence: 'medium', score: 0.8, description: 'CLI process exited with code 0' },
+  A2A_COMPLETION: { confidence: 'high', score: 0.85, description: 'A2A protocol completion handshake' },
+  UI_STOP_IDLE: { confidence: 'medium', score: 0.7, description: 'UI stop-indicator disappeared & composer idle' },
+  STABILITY_HEURISTIC: { confidence: 'low', score: 0.3, description: 'Response text stabilized (heuristic fallback)' }
+});
+
+export function getCompletionConfidence(tier) {
+  const norm = tier === 'INDICATOR_BASED' ? 'UI_STOP_IDLE' : (tier === 'MCP_AUTHENTICATED_SUBMIT' ? 'AUTHENTICATED_SUBMIT' : tier);
+  return CompletionTierConfidence[norm] || { confidence: 'low', score: 0.1, description: 'Unclassified evidence' };
+}
 
 export const DeliveryStage = Object.freeze({
   REGISTERED: 'REGISTERED',

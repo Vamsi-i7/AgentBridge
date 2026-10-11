@@ -16,6 +16,7 @@ import { AdapterHealth } from './control-plane/desktop-control-adapter.js';
 import { EffectsLedger, isEffectfulTool } from './effects/effects-ledger.js';
 import { AttemptLedger } from './attempts/attempt-ledger.js';
 import { ArtifactStore } from './artifacts/artifact-store.js';
+import { A2AAdapter } from './interop/a2a-adapter.js';
 
 export class BridgeHttpServer {
   constructor(options = {}) {
@@ -37,6 +38,12 @@ export class BridgeHttpServer {
     this.effectsLedger = options.effectsLedger || (this.logger?.db ? new EffectsLedger(this.logger) : null);
     this.attemptLedger = options.attemptLedger || this.taskManager?.attempts || (this.logger?.db ? new AttemptLedger(this.logger) : null);
     this.artifactStore = options.artifactStore || (this.logger ? new ArtifactStore(this.logger) : null);
+    this.a2aAdapter = options.a2aAdapter || new A2AAdapter({
+      taskManager: this.taskManager,
+      identityManager: this.identity,
+      permissionGuard: this.guard,
+      baseUrl: `http://${this.host}:${this.port}`
+    });
 
     if (!this.diagnostics.startupStamp) {
       let gitHead = 'unknown';
@@ -240,6 +247,17 @@ export class BridgeHttpServer {
   }
 
   start() {
+    const isTestEnv = process.env.NODE_ENV === 'test' ||
+      Boolean(process.env.NODE_TEST_CONTEXT) ||
+      process.argv.some(arg => typeof arg === 'string' && (arg.includes('--test') || arg.includes('.test.')));
+    const targetPort = parseInt(this.port, 10);
+    if (isTestEnv && (targetPort === 8765 || targetPort === CONFIG.HTTP_PORT)) {
+      return Promise.reject(new Error(
+        `Safety violation: Tests are forbidden from binding the production bridge port (${targetPort}). ` +
+        `Use an ephemeral port (0) or a dedicated test port.`
+      ));
+    }
+
     if (this.requireApiKey && !this.apiKey) {
       return Promise.reject(new Error(
         'Authentication required but no control_plane.api_key is configured. ' +
@@ -283,16 +301,25 @@ export class BridgeHttpServer {
         }
 
         if (pathname === '/health' && method === 'GET') {
+          const auth = this.resolveAuth(req);
           res.writeHead(200, { 'Content-Type': 'application/json' });
+          if (auth && auth.authorized && !auth.unauthenticatedLocal) {
+            return res.end(JSON.stringify({
+              status: 'healthy',
+              service: 'agent-bridge',
+              authEnabled: Boolean(this.apiKey),
+              ziaWriteLocked: this.guard?.config?.ZIA_WRITE_LOCKED ?? CONFIG.ZIA_WRITE_LOCKED,
+              allowedRoots: this.guard?.config?.ALLOWED_ROOTS ?? CONFIG.ALLOWED_ROOTS,
+              activeAgents: this.guard?.config?.AGENT_IDENTITIES ?? CONFIG.AGENT_IDENTITIES,
+              liveAgents: this.presence ? this.presence.listAgents() : [],
+              startupStamp: this.diagnostics?.startupStamp || null
+            }));
+          }
+          // F-017: Unauthenticated /health returns liveness only (no allowed roots, no live agents, no fingerprinting)
           return res.end(JSON.stringify({
             status: 'healthy',
             service: 'agent-bridge',
-            authEnabled: Boolean(this.apiKey),
-            ziaWriteLocked: this.guard?.config?.ZIA_WRITE_LOCKED ?? CONFIG.ZIA_WRITE_LOCKED,
-            allowedRoots: this.guard?.config?.ALLOWED_ROOTS ?? CONFIG.ALLOWED_ROOTS,
-            activeAgents: this.guard?.config?.AGENT_IDENTITIES ?? CONFIG.AGENT_IDENTITIES,
-            liveAgents: this.presence ? this.presence.listAgents() : [],
-            startupStamp: this.diagnostics?.startupStamp || null
+            authEnabled: Boolean(this.apiKey)
           }));
         }
 
@@ -907,6 +934,24 @@ export class BridgeHttpServer {
             });
           }
 
+          // A2A Agent Card endpoint
+          if (pathname === '/.well-known/agent.json' && method === 'GET') {
+            const card = this.a2aAdapter.generateAgentCard({ id: 'agent-bridge', displayName: 'Agent Bridge Host' });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify(card, null, 2));
+          }
+
+          // A2A JSON-RPC 2.0 endpoint
+          if (pathname === '/a2a/v1/rpc' && method === 'POST') {
+            const body = await readBody();
+            const rpcRes = await this.a2aAdapter.handleA2ARequest(body, {
+              agentId: auth.agentId || 'anonymous',
+              isPrivileged: Boolean(auth.isPrivileged)
+            });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify(rpcRes));
+          }
+
           // 404 fallback
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Endpoint not found' }));
@@ -951,6 +996,14 @@ export class BridgeHttpServer {
         try { client.res.end(); } catch {}
       }
       this.sseClients.clear();
+      if (this.backgroundGPT && typeof this.backgroundGPT.close === 'function') {
+        try { this.backgroundGPT.close(); } catch {}
+        this.backgroundGPT = null;
+      }
+      if (this.localEngine && typeof this.localEngine.close === 'function') {
+        try { this.localEngine.close(); } catch {}
+        this.localEngine = null;
+      }
       if (this.server) {
         try {
           if (typeof this.server.closeAllConnections === 'function') {

@@ -115,7 +115,7 @@ test('Tool-Surface Token Reduction & Profile Measurement Suite', async (t) => {
     const diagnostics = new DiagnosticsManager();
 
     // Yet calling it directly succeeds without throwing 'Unknown tool'
-    const result = await registry.executeTool('bridge_diagnostics', {}, { diagnostics });
+    const result = await registry.executeTool('bridge_diagnostics', {}, { diagnostics, agentId: 'freebuff' });
     assert.ok(result);
     assert.strictEqual(result.agent, 'freebuff');
     assert.strictEqual(result.state, 'OFFLINE');

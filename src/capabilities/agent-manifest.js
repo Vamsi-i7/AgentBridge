@@ -120,13 +120,69 @@ export const AGENT_MANIFESTS = Object.freeze({
   }
 });
 
+const dynamicManifests = new Map();
+
+/**
+ * Validate and register an agent manifest.
+ * Allows onboarding new agents from a pure manifest declaration alone without code modifications.
+ */
+export function registerAgentManifest(manifest) {
+  if (!manifest || typeof manifest !== 'object') {
+    throw new Error('Manifest must be a non-null object');
+  }
+  if (!manifest.agentId || typeof manifest.agentId !== 'string') {
+    throw new Error('Manifest requires a valid non-empty string agentId');
+  }
+  if (!manifest.displayName || typeof manifest.displayName !== 'string') {
+    throw new Error('Manifest requires a valid non-empty string displayName');
+  }
+  if (!Array.isArray(manifest.routes)) {
+    throw new Error('Manifest requires a routes array');
+  }
+  for (const route of manifest.routes) {
+    if (!route || typeof route !== 'object' || !route.id || !route.type) {
+      throw new Error('Each route in manifest.routes must specify id and type');
+    }
+  }
+
+  const norm = manifest.agentId.trim().toLowerCase();
+  const validated = Object.freeze({
+    agentId: norm,
+    displayName: manifest.displayName,
+    appType: manifest.appType || 'custom',
+    bundleId: manifest.bundleId || null,
+    appName: manifest.appName || manifest.displayName,
+    routes: Object.freeze(manifest.routes.map(r => Object.freeze({ ...r }))),
+    fallbackChain: Object.freeze(Array.isArray(manifest.fallbackChain) ? [...manifest.fallbackChain] : (manifest.routes[0]?.id ? [manifest.routes[0].id] : ['mcp-stdio'])),
+    maxConcurrency: typeof manifest.maxConcurrency === 'number' ? manifest.maxConcurrency : 1,
+    headlessCliSupported: Boolean(manifest.headlessCliSupported),
+    cdpSupported: Boolean(manifest.cdpSupported)
+  });
+
+  dynamicManifests.set(norm, validated);
+  return validated;
+}
+
+export function unregisterAgentManifest(agentId) {
+  if (!agentId) return false;
+  return dynamicManifests.delete(agentId.trim().toLowerCase());
+}
+
+export function listAllAgentManifests() {
+  const merged = new Map(Object.entries(AGENT_MANIFESTS));
+  for (const [k, v] of dynamicManifests.entries()) {
+    merged.set(k, v);
+  }
+  return Array.from(merged.values());
+}
+
 /**
  * Manifest Resolver
  */
 export function getAgentManifest(agentId) {
   if (!agentId || typeof agentId !== 'string') return null;
   const norm = agentId.trim().toLowerCase();
-  return AGENT_MANIFESTS[norm] || null;
+  return dynamicManifests.get(norm) || AGENT_MANIFESTS[norm] || null;
 }
 
 export function getAgentAppName(agentId, fallback = 'Desktop Application') {

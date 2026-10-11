@@ -222,16 +222,18 @@ test('Complete 15-Point Connected Agent Integration Suite', async (t) => {
     }, /ConflictDetected/);
   });
 
-  await t.test('TEST 14: Owner-authorized Zia writes are permitted', async () => {
+  await t.test('TEST 14: Zia writes are locked when ZIA_WRITE_LOCKED is true', async () => {
     const ziaTargetPath = path.join(CONFIG.ZIA_ROOT, 'UnauthorizedProbe.swift');
-    if (fs.existsSync(ziaTargetPath)) fs.unlinkSync(ziaTargetPath);
-    const claudeWrite = await controller.createFile(ziaTargetPath, 'claude-desktop', 'allowed by owner policy');
-    assert.strictEqual(claudeWrite.status, 'created');
-    fs.unlinkSync(ziaTargetPath);
-
-    const chatgptWrite = await controller.createFile(ziaTargetPath, 'chatgpt-desktop', 'allowed by owner policy');
-    assert.strictEqual(chatgptWrite.status, 'created');
-    fs.unlinkSync(ziaTargetPath);
+    if (CONFIG.ZIA_WRITE_LOCKED) {
+      await assert.rejects(async () => {
+        await controller.createFile(ziaTargetPath, 'claude-desktop', 'probe');
+      }, /WRITE-LOCKED|outside allowed roots/);
+    } else {
+      if (fs.existsSync(ziaTargetPath)) fs.unlinkSync(ziaTargetPath);
+      const claudeWrite = await controller.createFile(ziaTargetPath, 'claude-desktop', 'allowed by owner policy');
+      assert.strictEqual(claudeWrite.status, 'created');
+      fs.unlinkSync(ziaTargetPath);
+    }
   });
 
   await t.test('TEST 15: Home-directory access is owner-authorized, minus credential locations', async () => {

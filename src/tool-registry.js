@@ -11,6 +11,18 @@ import { SignedSkillRegistry } from './skills/skill-registry.js';
 // Lazily-created per-context artifact store, so every transport (stdio MCP, HTTP
 // MCP, plugins) can store/retrieve real bytes without each wiring its own.
 const artifactStoreCache = new WeakMap();
+// Trusted identity for tool authorization.
+//
+// `args.agentId` must NEVER be used for authorization: on an unbound connection
+// it is whatever the caller supplied, so it can be pointed at the owner of a
+// resource to satisfy an ownership check. The trusted sources are the transport
+// context (`ctx.agentId`, set from the authenticated credential) and, for stdio
+// MCP servers which carry only `boundAgentId`, the connection binding.
+function trustedCallerAgentId(ctx) {
+  if (!ctx || typeof ctx !== 'object') return null;
+  return ctx.agentId || ctx.boundAgentId || ctx.identity?.boundAgentId || null;
+}
+
 async function resolveArtifactStore(ctx) {
   if (ctx.artifactStore) return ctx.artifactStore;
   let store = artifactStoreCache.get(ctx);
@@ -307,9 +319,13 @@ export class ToolRegistry {
       tool = {
         name: 'bridge_explain_request',
         handler: async (args, ctx) => {
-          const caller = (args.agentId && args.agentId !== 'freebuff') || ctx.agentId || ctx.isPrivileged
-            ? { agentId: args.agentId || ctx.agentId, isPrivileged: Boolean(ctx.isPrivileged) }
-            : null;
+          const callerId = trustedCallerAgentId(ctx);
+          if (!ctx.isPrivileged && (!callerId || callerId === 'anonymous')) {
+            const noIdentErr = new Error(`Unauthorized: no authenticated identity on this connection; cannot explain request '${args.requestId}'`);
+            noIdentErr.code = 'UNAUTHORIZED_EXPLAIN_ACCESS';
+            throw noIdentErr;
+          }
+          const caller = { agentId: callerId, isPrivileged: Boolean(ctx.isPrivileged) };
           if (ctx.requestExplainer) {
             return ctx.requestExplainer.explainRequest(args.requestId, caller);
           }
@@ -325,11 +341,16 @@ export class ToolRegistry {
         handler: async (args, ctx) => {
           const { RequestTracer } = await import('./diagnostics/request-tracer.js');
           const tracer = ctx.tracer || ctx.mailbox?.tracer || (ctx.db || ctx.audit?.db || ctx.logger?.db ? new RequestTracer({ db: ctx.db || ctx.audit?.db || ctx.logger?.db }) : null);
-          if (!tracer) throw new Error('RequestTracer not available');
-          const callerId = ctx.isPrivileged ? null : (ctx.agentId || args.agentId);
-          const ledger = tracer.getLedger(args.requestId);
+          // Authorization MUST come from the trusted transport context only.
+          const callerId = ctx.isPrivileged ? null : trustedCallerAgentId(ctx);
+          const ledger = tracer?.getLedger ? tracer.getLedger(args.requestId) : null;
           if (!ledger) {
             return { found: false, requestId: args.requestId, error: 'Ledger not found' };
+          }
+          if (!ctx.isPrivileged && (!callerId || callerId === 'anonymous')) {
+            const noIdentErr = new Error(`Unauthorized: no authenticated identity on this connection; cannot inspect ledger for request '${args.requestId}'`);
+            noIdentErr.code = 'UNAUTHORIZED_LEDGER_ACCESS';
+            throw noIdentErr;
           }
           if (callerId && !ctx.isPrivileged) {
             const normCaller = String(callerId).trim().toLowerCase();
@@ -356,24 +377,42 @@ export class ToolRegistry {
       tool = {
         name: 'bridge_wait_for_response',
         handler: async (args, ctx) => {
+          const callerAgent = trustedCallerAgentId(ctx);
+          if (!ctx.isPrivileged && (!callerAgent || callerAgent === 'anonymous')) {
+            const unauthErr = new Error(`Unauthorized: no authenticated identity on this connection; cannot wait for response for request '${args.requestId}'`);
+            unauthErr.code = 'UNAUTHORIZED_RESPONSE_ACCESS';
+            throw unauthErr;
+          }
           const mailbox = ctx.mailbox;
           const eventBus = ctx.eventBus || mailbox?.eventBus;
           const timeoutMs = args.timeoutMs || 60000;
           if (!eventBus) throw new Error('EventBus not available in execution context');
           const outcome = await eventBus.waitForResponse({
             requestId: args.requestId,
-            agentId: ctx.agentId || args.agentId || null,
+            agentId: ctx.isPrivileged ? (args.agentId || callerAgent) : callerAgent,
             attemptId: args.attemptId || ctx.attemptId || null,
             epoch: args.epoch !== undefined ? args.epoch : (ctx.epoch !== undefined ? ctx.epoch : null),
             timeoutMs
           });
+
+          // Check response ownership on resolution
+          if (outcome && !ctx.isPrivileged && callerAgent) {
+            const normCaller = String(callerAgent).trim().toLowerCase();
+            const fromNorm = outcome.fromAgent ? String(outcome.fromAgent).trim().toLowerCase() : null;
+            const toNorm = outcome.toAgent ? String(outcome.toAgent).trim().toLowerCase() : null;
+            if (fromNorm && toNorm && normCaller !== fromNorm && normCaller !== toNorm) {
+              const err = new Error(`Unauthorized: agent '${callerAgent}' is not authorized to receive response for request '${args.requestId}'`);
+              err.code = 'UNAUTHORIZED_RESPONSE_ACCESS';
+              throw err;
+            }
+          }
 
           // Commit to bridge user display immediately upon resolution
           const { defaultDisplayManager } = await import('./display/bridge-display-manager.js');
           const displayMgr = ctx.displayManager || defaultDisplayManager;
           if (outcome && (outcome.status === 'completed' || outcome.response)) {
             await displayMgr.commitResult(args.requestId, outcome, {
-              fromAgent: outcome.fromAgent || ctx.agentId || null
+              fromAgent: outcome.fromAgent || callerAgent || null
             });
           }
 
@@ -394,7 +433,12 @@ export class ToolRegistry {
           const slice = cas.getSlice(args.ref, args.offset || 0, args.length || 4000);
           if (!slice) {
             if (ctx.artifactStore) {
-              const callerAgent = ctx.agentId || args.agentId;
+              const callerAgent = trustedCallerAgentId(ctx);
+              if (!ctx.isPrivileged && (!callerAgent || callerAgent === 'anonymous')) {
+                const unauthErr = new Error(`Unauthorized: no authenticated identity on this connection; cannot fetch content slice '${args.ref}'`);
+                unauthErr.code = 'ARTIFACT_UNAUTHORIZED';
+                throw unauthErr;
+              }
               try {
                 return ctx.artifactStore.readChunk(args.ref, {
                   agentId: callerAgent,
@@ -533,7 +577,7 @@ export class ToolRegistry {
     } else if (context.isPrivileged === true) {
       callerAgentId = rawArgs.agentId || rawArgs.fromAgent || 'system';
     } else {
-      callerAgentId = rawArgs.agentId || rawArgs.fromAgent || 'freebuff';
+      callerAgentId = 'anonymous';
     }
 
     // Attach resolved agentId to arguments
@@ -542,6 +586,10 @@ export class ToolRegistry {
 
     // Classification & Authoritative Execution Boundary Check
     const effectful = isEffectfulTool(name);
+
+    if (effectful && (callerAgentId === 'anonymous' || context.agentId === 'anonymous')) {
+      throw new Error(`Unauthorized: anonymous callers cannot execute effectful tool '${name}'.`);
+    }
 
     if (!effectful) {
       // PURE / READ-ONLY: Executed directly without requiring Attempt context
@@ -835,14 +883,27 @@ export class ToolRegistry {
       },
       handler: async (args, ctx) => {
         if (args.requestId) {
+          const callerId = trustedCallerAgentId(ctx);
+          if (!ctx.isPrivileged && (!callerId || callerId === 'anonymous')) {
+            const err = new Error(`Unauthorized: no authenticated identity on this connection; cannot inspect request diagnostics for '${args.requestId}'`);
+            err.code = 'UNAUTHORIZED_DIAGNOSTICS_ACCESS';
+            throw err;
+          }
+          const caller = { agentId: callerId, isPrivileged: Boolean(ctx.isPrivileged) };
           if (ctx.requestExplainer) {
-            return ctx.requestExplainer.explainRequest(args.requestId);
+            return ctx.requestExplainer.explainRequest(args.requestId, caller);
           }
           const { RequestExplainer } = await import('./diagnostics/request-explainer.js');
-          const explainer = new RequestExplainer(ctx.db || ctx.audit?.db);
-          return explainer.explainRequest(args.requestId);
+          const explainer = new RequestExplainer(ctx.db || ctx.audit?.db || ctx.logger?.db || ctx.mailbox?.db);
+          return explainer.explainRequest(args.requestId, caller);
         }
         if (args.agentId && ctx.diagnostics) {
+          const callerId = trustedCallerAgentId(ctx);
+          if (!ctx.isPrivileged && (!callerId || callerId === 'anonymous' || callerId.toLowerCase() !== args.agentId.toLowerCase())) {
+            const err = new Error(`Unauthorized: caller '${callerId || 'anonymous'}' cannot inspect diagnostics for agent '${args.agentId}'`);
+            err.code = 'UNAUTHORIZED_DIAGNOSTICS_ACCESS';
+            throw err;
+          }
           return ctx.diagnostics.getAgentDiagnostics(args.agentId, {
             db: ctx.db || ctx.audit?.db,
             eventBus: ctx.eventBus,
@@ -909,6 +970,7 @@ export class ToolRegistry {
       },
       handler: async (args, ctx) => ctx.controller.readSymbol(args.filePath, args.agentId, args.symbol, args.contextLines, args.maxLines)
     });
+
 
     this.registerTool({
       name: 'bridge_test_plan',
@@ -1387,7 +1449,21 @@ export class ToolRegistry {
         },
         required: ['agentId']
       },
-      handler: async (args, ctx) => ctx.mailbox.getInbox(args)
+      handler: async (args, ctx) => {
+        const callerAgent = trustedCallerAgentId(ctx);
+        if (!ctx.isPrivileged && (!callerAgent || callerAgent === 'anonymous')) {
+          const err = new Error('Unauthorized: no authenticated identity on this connection; cannot read inbox.');
+          err.code = 'UNAUTHORIZED_INBOX_ACCESS';
+          throw err;
+        }
+        const targetAgent = ctx.isPrivileged ? (args.agentId || callerAgent) : callerAgent;
+        if (!ctx.isPrivileged && args.agentId && String(args.agentId).trim().toLowerCase() !== String(callerAgent).trim().toLowerCase()) {
+          const err = new Error(`Unauthorized: caller '${callerAgent}' cannot read inbox for '${args.agentId}'.`);
+          err.code = 'UNAUTHORIZED_INBOX_ACCESS';
+          throw err;
+        }
+        return ctx.mailbox.getInbox({ ...args, agentId: targetAgent });
+      }
     });
 
     this.registerTool({
@@ -1439,8 +1515,20 @@ export class ToolRegistry {
         required: ['agentId']
       },
       handler: async (args, ctx) => {
-        const claimed = ctx.mailbox.claimNextTask(args.agentId);
-        return claimed || { status: 'no_tasks_available', agentId: args.agentId };
+        const callerAgent = trustedCallerAgentId(ctx);
+        if (!ctx.isPrivileged && (!callerAgent || callerAgent === 'anonymous')) {
+          const err = new Error('Unauthorized: no authenticated identity on this connection; cannot claim tasks.');
+          err.code = 'UNAUTHORIZED_TASK_ACCESS';
+          throw err;
+        }
+        const targetAgent = ctx.isPrivileged ? (args.agentId || callerAgent) : callerAgent;
+        if (!ctx.isPrivileged && args.agentId && String(args.agentId).trim().toLowerCase() !== String(callerAgent).trim().toLowerCase()) {
+          const err = new Error(`Unauthorized: caller '${callerAgent}' cannot claim tasks for '${args.agentId}'.`);
+          err.code = 'UNAUTHORIZED_TASK_ACCESS';
+          throw err;
+        }
+        const claimed = ctx.mailbox.claimNextTask(targetAgent);
+        return claimed || { status: 'no_tasks_available', agentId: targetAgent };
       }
     });
 
@@ -1457,7 +1545,13 @@ export class ToolRegistry {
       },
       handler: async (args, ctx) => {
         const compact = args.compact !== false; // default true
-        const caller = { agentId: args.agentId, isPrivileged: Boolean(ctx.isPrivileged) };
+        const callerAgent = trustedCallerAgentId(ctx);
+        if (!ctx.isPrivileged && (!callerAgent || callerAgent === 'anonymous')) {
+          const err = new Error(`Unauthorized: no authenticated identity on this connection; cannot inspect task '${args.taskId}'.`);
+          err.code = 'UNAUTHORIZED_TASK_ACCESS';
+          throw err;
+        }
+        const caller = { agentId: callerAgent, isPrivileged: Boolean(ctx.isPrivileged) };
         return ctx.mailbox.getTask(args.taskId, compact, caller);
       }
     });
@@ -1478,8 +1572,36 @@ export class ToolRegistry {
         },
         required: ['taskId', 'agentId', 'status']
       },
-      handler: async (args, ctx) => ctx.mailbox.submitTaskResult(args)
+      handler: async (args, ctx) => {
+        if (args.contractType && args.status === 'completed' && args.result) {
+          const { StructuredContractValidator } = await import('./contracts/structured-contracts.js');
+          const val = StructuredContractValidator.validate(args.contractType, args.result);
+          if (!val.valid) {
+            return {
+              ok: false,
+              status: 'rejected',
+              error: `CONTRACT_VIOLATION: Result does not conform to '${args.contractType}' contract: ${val.errors?.join(', ')}`
+            };
+          }
+          if (val.compactText) {
+            args.result = val.compactText;
+          }
+        }
+        const outcome = await ctx.mailbox.submitTaskResult(args);
+        try {
+          const { defaultDisplayManager } = await import('./display/bridge-display-manager.js');
+          const displayMgr = ctx.displayManager || defaultDisplayManager;
+          if (displayMgr && args.result) {
+            await displayMgr.commitResult(args.taskId, args.result, {
+              agentId: args.agentId,
+              status: args.status
+            });
+          }
+        } catch {}
+        return outcome;
+      }
     });
+
 
     this.registerTool({
       name: 'bridge_ask_agent',
@@ -1495,6 +1617,11 @@ export class ToolRegistry {
           requestId: { type: 'string' },
           timeoutMs: { type: 'number' },
           asyncMode: { type: 'boolean' },
+          includeFullTrace: {
+            type: 'boolean',
+            default: false,
+            description: 'If true, returns full outcome including traces, token metrics, and envelope. Default false returns compact shape.'
+          },
           responseMode: {
             type: 'string',
             enum: ['direct', 'assist', 'structured'],
@@ -1504,7 +1631,43 @@ export class ToolRegistry {
         },
         required: ['fromAgent', 'toAgent', 'question']
       },
-      handler: async (args, ctx) => ctx.mailbox.askAgent(args)
+      handler: async (args, ctx) => {
+        const fullOutcome = await ctx.mailbox.askAgent(args);
+        let pendingNotice = null;
+        if (args.fromAgent && ctx.mailbox?.getPendingRequests) {
+          try {
+            const pending = ctx.mailbox.getPendingRequests(args.fromAgent, 5);
+            if (pending && pending.length > 0) {
+              pendingNotice = {
+                pendingCount: pending.length,
+                notice: `You have ${pending.length} pending request(s) queued for your attention. Use bridge_get_pending_requests and bridge_answer_request to view and settle them.`,
+                items: pending.map(p => ({
+                  requestId: p.requestId,
+                  fromAgent: p.fromAgent,
+                  question: p.question ? (p.question.length > 80 ? p.question.slice(0, 80) + '...' : p.question) : ''
+                }))
+              };
+            }
+          } catch {}
+        }
+
+        if (args.includeFullTrace === true) {
+          if (pendingNotice) {
+            fullOutcome.pendingWorkNotice = pendingNotice;
+          }
+          return fullOutcome;
+        }
+        return {
+          requestId: fullOutcome?.requestId || null,
+          status: fullOutcome?.status || 'completed',
+          response: fullOutcome?.response !== undefined ? fullOutcome.response : null,
+          error: fullOutcome?.error || null,
+          completionConfidence: fullOutcome?.completionConfidence || null,
+          responseId: fullOutcome?.responseId || null,
+          pendingWorkNotice: pendingNotice,
+          untrustedData: true
+        };
+      }
     });
 
     this.registerTool({
@@ -1518,8 +1681,18 @@ export class ToolRegistry {
         required: ['requestId']
       },
       handler: async (args, ctx) => {
-        const caller = { agentId: args.agentId, isPrivileged: Boolean(ctx.isPrivileged) };
-        return ctx.mailbox.getRequest(args.requestId, caller);
+        const callerAgent = trustedCallerAgentId(ctx);
+        if (!ctx.isPrivileged && (!callerAgent || callerAgent === 'anonymous')) {
+          const err = new Error(`Unauthorized: no authenticated identity on this connection; cannot inspect request status for '${args.requestId}'.`);
+          err.code = 'UNAUTHORIZED_REQUEST_ACCESS';
+          throw err;
+        }
+        const caller = { agentId: callerAgent, isPrivileged: Boolean(ctx.isPrivileged) };
+        const req = ctx.mailbox.getRequest(args.requestId, caller);
+        if (!req) {
+          throw new Error(`Request not found: ${args.requestId}`);
+        }
+        return req;
       }
     });
 
@@ -1537,7 +1710,13 @@ export class ToolRegistry {
         if (!args.responseId && !args.requestId) {
           throw new Error('Either responseId or requestId must be provided');
         }
-        const caller = { agentId: args.agentId, isPrivileged: Boolean(ctx.isPrivileged) };
+        const callerAgent = trustedCallerAgentId(ctx);
+        if (!ctx.isPrivileged && (!callerAgent || callerAgent === 'anonymous')) {
+          const err = new Error('Unauthorized: no authenticated identity on this connection; cannot retrieve responses.');
+          err.code = 'UNAUTHORIZED_RESPONSE_ACCESS';
+          throw err;
+        }
+        const caller = { agentId: callerAgent, isPrivileged: Boolean(ctx.isPrivileged) };
         if (args.responseId) {
           const resp = ctx.mailbox.getResponse ? ctx.mailbox.getResponse(args.responseId, caller) : null;
           if (!resp) throw new Error(`Response not found: ${args.responseId}`);
@@ -1572,7 +1751,21 @@ export class ToolRegistry {
         },
         required: ['agentId']
       },
-      handler: async (args, ctx) => ctx.mailbox.getPendingRequests(args.agentId, args.limit || 10)
+      handler: async (args, ctx) => {
+        const callerAgent = trustedCallerAgentId(ctx);
+        if (!ctx.isPrivileged && (!callerAgent || callerAgent === 'anonymous')) {
+          const err = new Error('Unauthorized: no authenticated identity on this connection; cannot retrieve pending requests.');
+          err.code = 'UNAUTHORIZED_PENDING_ACCESS';
+          throw err;
+        }
+        const targetAgent = ctx.isPrivileged ? (args.agentId || callerAgent) : callerAgent;
+        if (!ctx.isPrivileged && args.agentId && String(args.agentId).trim().toLowerCase() !== String(callerAgent).trim().toLowerCase()) {
+          const err = new Error(`Unauthorized: caller '${callerAgent}' cannot read pending requests for '${args.agentId}'.`);
+          err.code = 'UNAUTHORIZED_PENDING_ACCESS';
+          throw err;
+        }
+        return ctx.mailbox.getPendingRequests(targetAgent, args.limit || 10);
+      }
     });
 
     this.registerTool({
@@ -1606,7 +1799,19 @@ export class ToolRegistry {
           compact: { type: 'boolean' }
         }
       },
-      handler: async (args, ctx) => ctx.eventBus ? ctx.eventBus.getEvents(args) : []
+      handler: async (args, ctx) => {
+        const callerAgent = trustedCallerAgentId(ctx);
+        if (!ctx.isPrivileged && (!callerAgent || callerAgent === 'anonymous')) {
+          const err = new Error('Unauthorized: no authenticated identity on this connection; cannot read event bus events.');
+          err.code = 'UNAUTHORIZED_EVENTS_ACCESS';
+          throw err;
+        }
+        const queryArgs = { ...args };
+        if (!ctx.isPrivileged) {
+          queryArgs.agentId = callerAgent;
+        }
+        return ctx.eventBus ? ctx.eventBus.getEvents(queryArgs) : [];
+      }
     });
 
     this.registerTool({
@@ -1628,6 +1833,7 @@ export class ToolRegistry {
         }
         return {
           ...legacy,
+          autonomousModelWake: legacy.autonomousModelWake || (legacy.autonomousExecution ? 'supported' : 'unsupported; interactive client only'),
           v2Routes
         };
       }
@@ -1919,7 +2125,8 @@ export class ToolRegistry {
       },
       handler: async (args, ctx) => {
         const store = await resolveArtifactStore(ctx);
-        return store.getMetadata(args.artifactId, { agentId: args.agentId });
+        // Trusted context only; `args.agentId` would let the caller name the owner.
+        return store.getMetadata(args.artifactId, { agentId: trustedCallerAgentId(ctx) });
       }
     });
 
@@ -1939,7 +2146,8 @@ export class ToolRegistry {
       },
       handler: async (args, ctx) => {
         const store = await resolveArtifactStore(ctx);
-        const callerAgent = args.agentId || ctx.agentId;
+        // Trusted context only; `read`/`readChunk` fail closed on a null identity.
+        const callerAgent = trustedCallerAgentId(ctx);
         const isChunked = args.offset !== undefined || args.length !== undefined;
 
         if (isChunked) {
@@ -1985,11 +2193,22 @@ export class ToolRegistry {
       inputSchema: { type: 'object', properties: { agentId: { type: 'string' } } },
       handler: async (args, ctx) => {
         const store = await resolveArtifactStore(ctx);
-        const callerAgent = args.agentId || ctx.agentId;
-        const isPrivileged = Boolean(ctx.isPrivileged || callerAgent === 'system');
+        // Trusted context only. Privilege comes from the authenticated context, not
+        // from a caller-supplied 'system' string, and an absent identity fails
+        // closed: `cleanupExpired` treats a null agentId as "every agent".
+        const callerAgent = trustedCallerAgentId(ctx);
+        const isPrivileged = Boolean(ctx.isPrivileged);
+        if (!isPrivileged && !callerAgent) {
+          const noIdentErr = new Error('Unauthorized: no authenticated identity on this connection; cannot run artifact cleanup.');
+          noIdentErr.code = 'ARTIFACT_UNAUTHORIZED';
+          throw noIdentErr;
+        }
         const result = store.cleanupExpired(Date.now(), { agentId: callerAgent, isPrivileged });
+        // Attribution only (never authorization): `audit_log.agent_id` is NOT NULL,
+        // and a privileged control-plane caller has no agent identity of its own.
+        const auditAgentId = callerAgent || 'system';
         ctx.logger?.log?.({
-          agentId: callerAgent,
+          agentId: auditAgentId,
           action: 'artifact_cleanup',
           status: 'success',
           details: result

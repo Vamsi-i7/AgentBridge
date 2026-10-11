@@ -5,6 +5,7 @@ import { exec, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ConcurrencyManager } from './concurrency-manager.js';
 import { CacheManager } from './cache-manager.js';
+import { RepoSymbolOutlineGenerator } from './code-intelligence/repo-code-map.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -538,6 +539,17 @@ export class ProjectController {
     const end = Math.min(start + Math.max(1, maxLines) - 1, match.lineNumber + maxLines);
     const result = await this.readFile(filePath, agentId, start, end, true);
     return { symbol, ...result };
+  }
+
+  async getSymbolOutline(filePath, agentId) {
+    const fileRes = await this.readFile(filePath, agentId);
+    const outline = RepoSymbolOutlineGenerator.generateOutline(fileRes.content, filePath);
+    return {
+      filePath,
+      classes: outline.classes,
+      functions: outline.functions,
+      symbols: outline.symbols
+    };
   }
 
   async buildContext(rootPath, agentId, query = null, maxResults = 8) {

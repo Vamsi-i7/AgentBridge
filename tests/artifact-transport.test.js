@@ -190,7 +190,7 @@ test('Binary artifact transport: real bytes, integrity, and authorization', asyn
   await t.test('12. Retrieval through the client-facing tool path returns real bytes', async () => {
     const registry = new ToolRegistry();
     const bytes = pngFixture('via-tools-' + 'y'.repeat(300));
-    const context = { logger, artifactStore: store };
+    const context = { logger, artifactStore: store, agentId: 'gemini' };
 
     const stored = await registry.executeTool('bridge_artifact_store', {
       agentId: 'gemini',
@@ -306,7 +306,7 @@ test('Binary artifact transport: real bytes, integrity, and authorization', asyn
     // Through the client-facing tool path the same ceiling applies.
     const registry = new ToolRegistry();
     await assert.rejects(
-      registry.executeTool('bridge_artifact_read', { agentId: 'gemini', artifactId: ref.artifact_id }, { logger, artifactStore: bigStore }),
+      registry.executeTool('bridge_artifact_read', { agentId: 'gemini', artifactId: ref.artifact_id }, { logger, artifactStore: bigStore, agentId: 'gemini' }),
       /too large|exceeds/i
     );
   });

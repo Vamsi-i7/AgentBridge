@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { CONFIG } from './config.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SchemaMigrator } from './storage/schema-migrator.js';
 
 export class AuditLogger {
   constructor(dbPath = CONFIG.DB_PATH) {
@@ -20,6 +21,10 @@ export class AuditLogger {
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.initTables();
+    try {
+      const migrator = new SchemaMigrator(this.db);
+      migrator.migrateToLatest();
+    } catch {}
   }
 
   initTables() {

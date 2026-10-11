@@ -59,10 +59,26 @@ export class ClaudeDesktopSessionAdapter extends AgentSessionAdapter {
   }
 
   async deliverResponse(response) {
+    const pendingDigest = this.getPendingWorkDigest();
     return {
       status: 'buffered_in_durable_queue',
       agentId: this.agentId,
-      requestId: response.requestId
+      requestId: response.requestId,
+      pendingWorkDigest: pendingDigest
+    };
+  }
+
+  getPendingWorkDigest(limit = 5) {
+    const pending = this.mailbox?.getPendingRequests ? this.mailbox.getPendingRequests(this.agentId, limit) : [];
+    if (!pending || pending.length === 0) return null;
+    return {
+      pendingCount: pending.length,
+      notice: `You have ${pending.length} pending request(s) queued for your attention.`,
+      requests: pending.map(p => ({
+        requestId: p.requestId,
+        fromAgent: p.fromAgent,
+        snippet: p.question ? (p.question.length > 80 ? p.question.slice(0, 80) + '...' : p.question) : ''
+      }))
     };
   }
 
@@ -131,12 +147,14 @@ export class ClaudeDesktopSessionAdapter extends AgentSessionAdapter {
       headlessExecution: false,
       externalModelWakeup: false,
       idleWakeupSupported: false,
+      autonomousModelWake: 'unsupported; interactive client only',
       activeTurnRpc: true,
       desktopNotificationSupported: true,
       fileAccess: true,
       gitAccess: true,
       mcpStdio: true,
       requiresUserPrompt: true,
+      pendingWorkDelivery: 'response_digest',
       notes: 'Claude Desktop connects via stdio MCP. When Claude invokes bridge_ask_agent, it can await the correlated response. Inbound requests are durably queued in SQLite with native macOS user notifications, but cannot externally force an idle Claude model to generate a new turn without active user input.'
     };
   }

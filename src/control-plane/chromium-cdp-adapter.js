@@ -339,16 +339,20 @@ export class ChromiumCdpAdapter extends BaseRouteAdapter {
           onError(new Error(`CDP observation timed out after ${timeoutMs}ms`));
         }
       }, timeoutMs);
+      if (streamState.timer?.unref) streamState.timer.unref();
     }
 
     this.activeStreams.set(requestId, streamState);
 
     // Periodic lightweight DOM pull for partial text rendering without focus
+    let isPolling = false;
     const pollInterval = setInterval(async () => {
       if (streamState.completed || !this.connected) {
         clearInterval(pollInterval);
         return;
       }
+      if (isPolling) return; // Overlap guard
+      isPolling = true;
 
       try {
         const domResult = await this.callRpc('Runtime.evaluate', {
@@ -368,8 +372,11 @@ export class ChromiumCdpAdapter extends BaseRouteAdapter {
           streamState.accumulatedText = currentText;
           onChunk(delta);
         }
-      } catch {}
+      } catch {} finally {
+        isPolling = false;
+      }
     }, 150);
+    if (pollInterval?.unref) pollInterval.unref();
 
     streamState.pollInterval = pollInterval;
 

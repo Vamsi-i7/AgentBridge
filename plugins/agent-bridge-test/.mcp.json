@@ -1,11 +1,11 @@
 {
   "mcpServers": {
     "agent-bridge-test": {
-      "command": "/Users/jayanthpranaykonada/.nvm/versions/node/v24.12.0/bin/node",
+      "command": "node",
       "args": [
-        "/Users/jayanthpranaykonada/agent-bridge/src/mcp-server.js"
+        "../../src/mcp-server.js"
       ],
-      "cwd": "/Users/jayanthpranaykonada/agent-bridge",
+      "cwd": "${workspaceFolder}",
       "env_vars": [
         "PATH",
         "HOME"

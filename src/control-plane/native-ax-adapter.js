@@ -191,7 +191,7 @@ export class NativeAxAdapter extends BaseRouteAdapter {
 
     const cleanup = () => {
       if (pollTimer) {
-        clearInterval(pollTimer);
+        clearTimeout(pollTimer);
         pollTimer = null;
       }
       this.activeRequests.delete(requestId);
@@ -259,9 +259,27 @@ export class NativeAxAdapter extends BaseRouteAdapter {
       return { cancel };
     }
 
-    // Continuous AX polling with explicit signals
-    pollTimer = setInterval(async () => {
+    // Adaptive Polling Parameters (P9 remediation)
+    // FAST: 100ms when actively receiving text or generation is active (low latency streaming)
+    // NORMAL: 300ms when waiting for next generation chunk or during brief stillness
+    // IDLE: 600ms when quiescent or awaiting initial response, preventing CPU spin
+    const FAST_POLL_MS = 100;
+    const NORMAL_POLL_MS = 300;
+    const IDLE_POLL_MS = 600;
+
+    let currentIntervalMs = FAST_POLL_MS;
+    let isPolling = false;
+
+    const scheduleNextPoll = () => {
       if (completed || record.cancelled) return;
+      pollTimer = setTimeout(pollTick, currentIntervalMs);
+      if (pollTimer?.unref) pollTimer.unref();
+    };
+
+    const pollTick = async () => {
+      if (completed || record.cancelled) return;
+      if (isPolling) return; // Strict overlap guard: never fire next poll while previous is awaiting
+      isPolling = true;
 
       if (Date.now() > deadline) {
         completed = true;
@@ -275,9 +293,9 @@ export class NativeAxAdapter extends BaseRouteAdapter {
       try {
         let obs;
         if (typeof this.swiftBridge.observeResponse === 'function') {
-          obs = await this.swiftBridge.observeResponse(this.appName, requestId, this.pollIntervalMs);
+          obs = await this.swiftBridge.observeResponse(this.appName, requestId, currentIntervalMs);
         } else if (typeof this.swiftBridge.executeOp === 'function') {
-          obs = await this.swiftBridge.executeOp({ op: 'observeResponse', app: this.appName, requestId, timeoutMs: this.pollIntervalMs });
+          obs = await this.swiftBridge.executeOp({ op: 'observeResponse', app: this.appName, requestId, timeoutMs: currentIntervalMs });
         }
 
         if (record.cancelled || completed) return;
@@ -288,9 +306,13 @@ export class NativeAxAdapter extends BaseRouteAdapter {
             const delta = currentText.slice(lastText.length);
             lastText = currentText;
             stableCount = 0;
+            currentIntervalMs = FAST_POLL_MS; // Active streaming: fast tick
             if (typeof onChunk === 'function') onChunk(delta);
           } else if (currentText === lastText && currentText.length > 0) {
             stableCount++;
+            currentIntervalMs = NORMAL_POLL_MS; // Stabilizing: moderate tick
+          } else {
+            currentIntervalMs = IDLE_POLL_MS; // Empty or still: idle backoff
           }
 
           // Exact completion signals:
@@ -307,7 +329,7 @@ export class NativeAxAdapter extends BaseRouteAdapter {
                 requestId,
                 response: lastText,
                 routeId: this.routeId,
-                evidenceTier: CompletionEvidenceTier.INDICATOR_BASED,
+                evidenceTier: CompletionEvidenceTier.UI_STOP_IDLE,
                 confidence: 'high',
                 signal: 'STOP_BUTTON_GONE_AND_IDLE',
                 latencyMs: Date.now() - record.sentAt
@@ -334,11 +356,21 @@ export class NativeAxAdapter extends BaseRouteAdapter {
             }
             return;
           }
+        } else {
+          currentIntervalMs = IDLE_POLL_MS;
         }
       } catch (err) {
         // Continue until deadline unless cancelled
+      } finally {
+        isPolling = false;
+        if (!completed && !record.cancelled) {
+          scheduleNextPoll();
+        }
       }
-    }, this.pollIntervalMs);
+    };
+
+    // Initial kickoff
+    scheduleNextPoll();
 
     return { cancel };
   }

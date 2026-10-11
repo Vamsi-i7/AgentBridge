@@ -157,3 +157,5 @@ export class CollaborationManager {
     return this.get(collaborationId);
   }
 }
+import { CollaborationPatternOrchestrator } from './collaboration/collaboration-patterns.js';
+export { CollaborationPatternOrchestrator };

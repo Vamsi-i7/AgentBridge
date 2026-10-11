@@ -104,8 +104,12 @@ test('Agent Bridge Adversarial & Security Suite', async (t) => {
   await t.test('FS: lexical traversal outside roots is denied', () => {
     const { logger, guard } = freshController();
     try {
-      const traversal = path.join(TEST_WORKSPACE, '..', '..', '..', 'etc', 'passwd');
-      assert.strictEqual(guard.validatePathAccess(traversal, 'READ').allowed, false);
+      const root = CONFIG.ALLOWED_ROOTS[0];
+      const traversal = `${root}/${path.relative(root, '/etc/passwd')}`;
+      assert.ok(traversal.includes('..'), 'test setup must exercise traversal syntax');
+      const traversalCheck = guard.validatePathAccess(traversal, 'READ');
+      assert.strictEqual(traversalCheck.allowed, false);
+      assert.match(traversalCheck.reason, /outside allowed roots/);
       assert.strictEqual(guard.validatePathAccess('/etc/passwd', 'READ').allowed, false);
     } finally {
       logger.close();
@@ -226,13 +230,15 @@ test('Agent Bridge Adversarial & Security Suite', async (t) => {
     try { logger.close(); } catch {}
   });
 
-  await t.test('HTTP: health reports readiness without secrets', async () => {
+  await t.test('HTTP: health reports readiness without secrets (F-017 minimal liveness when unauthenticated)', async () => {
     const res = await fetch(`http://127.0.0.1:${PORT}/health`);
     assert.strictEqual(res.status, 200);
     const body = await res.json();
     assert.strictEqual(body.status, 'healthy');
     assert.strictEqual(body.authEnabled, false);
-    assert.ok(Array.isArray(body.allowedRoots));
+    assert.strictEqual(body.allowedRoots, undefined, 'unauthenticated /health must not leak allowedRoots');
+    assert.strictEqual(body.activeAgents, undefined, 'unauthenticated /health must not leak activeAgents');
+    assert.strictEqual(body.liveAgents, undefined, 'unauthenticated /health must not leak liveAgents');
   });
 
   await t.test('HTTP: bridge_ping reaches the real server and returns the token', async () => {

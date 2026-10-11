@@ -1,17 +1,27 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { CommandCenterService } from './command-center-service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function timingSafeEqualString(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 export class DashboardServer {
   constructor(options = {}) {
     this.port = options.port || 8768; // Isolated port by default
     this.host = options.host || '127.0.0.1'; // Strictly localhost
-    this.authToken = options.authToken || 'secret-operator-token';
+    // Random per-run token: shown once, never hard-coded, no default string
+    this.authToken = options.authToken || process.env.AGENT_BRIDGE_DASHBOARD_TOKEN || crypto.randomBytes(24).toString('hex');
     this.service = options.service || new CommandCenterService(options);
     this.eventBus = options.eventBus || null;
     this.server = null;
@@ -66,10 +76,42 @@ export class DashboardServer {
   }
 
   async _handleRequest(req, res) {
+    // 1. Loopback-only client check
+    const remote = req.socket ? req.socket.remoteAddress : '';
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Dashboard accepts loopback connections only.' }));
+    }
+
+    // 2. DNS-rebinding defense: validate loopback Host header
+    const hostHeader = String(req.headers['host'] || '').toLowerCase();
+    const hostname = hostHeader.startsWith('[')
+      ? hostHeader.slice(0, hostHeader.indexOf(']') + 1)
+      : hostHeader.replace(/:\d+$/, '');
+    if (!['127.0.0.1', 'localhost', '[::1]', '::1'].includes(hostname)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Dashboard requires loopback Host header.' }));
+    }
+
+    // 3. CSRF defense: check Origin header on cross-origin requests
+    const origin = req.headers['origin'];
+    if (origin) {
+      try {
+        const originUrl = new URL(origin);
+        if (!['127.0.0.1', 'localhost'].includes(originUrl.hostname) || originUrl.port !== String(this.port)) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'Cross-origin requests are forbidden.' }));
+        }
+      } catch {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'Invalid origin header.' }));
+      }
+    }
+
     const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
     const pathname = url.pathname;
 
-    // 1. Static UI serving (accessible for local browser operator)
+    // 4. Static UI serving (accessible for local browser operator)
     if (pathname === '/' || pathname === '/index.html') {
       const htmlPath = path.join(__dirname, 'public', 'index.html');
       if (fs.existsSync(htmlPath)) {
@@ -79,13 +121,12 @@ export class DashboardServer {
       }
     }
 
-    // 2. Authentication check for API endpoints
+    // 5. Authentication check for API endpoints (constant-time token check)
     if (pathname.startsWith('/api/') || pathname === '/events') {
       const authHeader = req.headers['authorization'] || '';
       const providedToken = authHeader.replace(/^Bearer\s+/i, '').trim();
 
-      // If token does not match, return 401
-      if (this.authToken && providedToken !== this.authToken) {
+      if (!timingSafeEqualString(providedToken, this.authToken)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Unauthorized: Invalid control-plane authentication token' }));
         return;

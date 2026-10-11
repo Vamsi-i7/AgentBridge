@@ -206,7 +206,7 @@ test('Optimizations, Atomic Patching & Token Efficiency Suite', async (t) => {
 
     const toolContext = await registry.executeTool('bridge_context', {
       rootPath: TEST_WORKSPACE, query: 'targetSymbol', agentId: 'antigravity-ide'
-    }, { controller, taskManager: null, presence: null, diagnostics });
+    }, { agentId: 'antigravity-ide', controller, taskManager: null, presence: null, diagnostics });
     assert.ok(Array.isArray(toolContext.relevant));
     const plan = await controller.testPlan(TEST_WORKSPACE, 'antigravity-ide');
     assert.ok(Array.isArray(plan.selectedTests));

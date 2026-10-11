@@ -140,6 +140,14 @@ export class SignedSkillRegistry {
       );
     }
 
+    if (lockEntry.approvalStatus === 'pending-user-approval') {
+      this._audit('SKILL_LOAD_REJECTED_PENDING_APPROVAL', { skillName, agentId });
+      throw new SkillSecurityError(
+        `Skill '${skillName}' is pending explicit user approval. Run 'bridge skill approve ${skillName}' to approve.`,
+        'SKILL_PENDING_USER_APPROVAL'
+      );
+    }
+
     // 4. Hash cache deduplication: if caller already has this exact hash, do not resend body
     if (clientHash && clientHash === skill.sha256) {
       this._audit('SKILL_LOAD_CACHED', { skillName, agentId, hash: skill.sha256 });
@@ -200,6 +208,13 @@ export class SignedSkillRegistry {
 
     if (!lockEntry || lockEntry.sha256 !== skill.sha256) {
       throw new SkillSecurityError(`Skill '${skillName}' hash untrusted.`);
+    }
+
+    if (lockEntry.approvalStatus === 'pending-user-approval') {
+      throw new SkillSecurityError(
+        `Skill '${skillName}' is pending explicit user approval.`,
+        'SKILL_PENDING_USER_APPROVAL'
+      );
     }
 
     // Declared permissions upper bound
@@ -310,6 +325,36 @@ export class SignedSkillRegistry {
       sha256: proposal.sha256,
       approvedBy
     };
+  }
+
+  /**
+   * Human CLI/dashboard approval for an installed/seed skill.
+   */
+  approveInstalledSkill(skillName, options = {}) {
+    const { isHumanApproved = false, approvedBy = 'user' } = options;
+    if (!isHumanApproved) {
+      throw new SkillSecurityError(
+        'Approval rejected: Explicit human approval is required.',
+        'HUMAN_APPROVAL_REQUIRED'
+      );
+    }
+    if (approvedBy.startsWith('agent:') || approvedBy.includes('gemini') || approvedBy.includes('chatgpt') || approvedBy.includes('claude')) {
+      throw new SkillSecurityError(
+        'Agents are strictly forbidden from approving or installing skills.',
+        'AGENT_SELF_INSTALL_FORBIDDEN'
+      );
+    }
+    const lock = this.skillsManager.readLockfile();
+    const key = Object.keys(lock.skills || {}).find(k => k === skillName || k.endsWith(`/${skillName}`));
+    if (!key || !lock.skills[key]) {
+      throw new SkillSecurityError(`Skill '${skillName}' not found in lockfile.`, 'SKILL_NOT_FOUND');
+    }
+    lock.skills[key].approvalStatus = 'approved';
+    lock.skills[key].approvedBy = approvedBy;
+    lock.skills[key].approvedAt = new Date().toISOString();
+    this.skillsManager.writeLockfile(lock);
+    this._audit('SKILL_APPROVED_BY_USER', { skillName, approvedBy });
+    return { approved: true, skillName, approvedBy };
   }
 
   _audit(eventType, details = {}) {

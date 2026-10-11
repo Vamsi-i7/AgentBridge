@@ -422,23 +422,23 @@
       <div class="meter-grid">
         <div class="metric-card">
           <div class="metric-title">Actual Tokens Consumed</div>
-          <div class="metric-value" id="val-tokens-used">21,300</div>
-          <div class="metric-sub">12,400 In &bull; 8,900 Out</div>
+          <div class="metric-value" id="val-tokens-used">—</div>
+          <div class="metric-sub" id="val-tokens-sub">— In &bull; — Out</div>
         </div>
         <div class="metric-card">
           <div class="metric-title">Saved vs. Manual Copy-Paste</div>
-          <div class="metric-value" id="val-tokens-saved" style="color: var(--accent-emerald);">+28,300</div>
-          <div class="metric-sub" id="val-savings-pct">57% Total Token Reduction</div>
+          <div class="metric-value" id="val-tokens-saved" style="color: var(--accent-emerald);">—</div>
+          <div class="metric-sub" id="val-savings-pct">Unmeasured</div>
         </div>
         <div class="metric-card">
           <div class="metric-title">CAS Reference &amp; Deltas Saved</div>
-          <div class="metric-value" id="val-cas-saved">24,500</div>
+          <div class="metric-value" id="val-cas-saved">—</div>
           <div class="metric-sub">Pass-by-Reference CAS</div>
         </div>
         <div class="metric-card">
           <div class="metric-title">Semantic Cache Hits</div>
-          <div class="metric-value" id="val-cache-hits">18</div>
-          <div class="metric-sub">&lt; 0.2ms Latency &bull; 0 Model Tokens</div>
+          <div class="metric-value" id="val-cache-hits">—</div>
+          <div class="metric-sub" id="val-cache-sub">Live hits &bull; 0 Model Tokens</div>
         </div>
       </div>
     </section>
@@ -451,42 +451,10 @@
           <h2>Live Conversation Graph</h2>
           <span style="font-size: 0.75rem; color: var(--text-dim);">Redacted by Default</span>
         </div>
-        <div class="graph-container">
-          <svg class="graph-svg" viewBox="0 0 500 280">
-            <!-- Animated Edges -->
-            <path d="M 120 70 Q 250 30 380 70" fill="none" stroke="#06b6d4" stroke-width="2" stroke-dasharray="6,4">
-              <animate attributeName="stroke-dashoffset" values="20;0" dur="1.5s" repeatCount="indefinite" />
-            </path>
-            <path d="M 380 100 Q 250 160 120 210" fill="none" stroke="#10b981" stroke-width="2" stroke-dasharray="6,4">
-              <animate attributeName="stroke-dashoffset" values="20;0" dur="1.5s" repeatCount="indefinite" />
-            </path>
-            <path d="M 120 210 Q 250 250 380 210" fill="none" stroke="#6366f1" stroke-width="2" />
-
-            <!-- Agent Nodes -->
-            <g transform="translate(100, 70)">
-              <circle r="36" fill="#111827" stroke="#06b6d4" stroke-width="2" />
-              <text text-anchor="middle" dy="-5" fill="#fff" font-size="11" font-weight="700">Gemini</text>
-              <text text-anchor="middle" dy="12" fill="#06b6d4" font-size="9">Frontier</text>
-            </g>
-            <g transform="translate(400, 70)">
-              <circle r="36" fill="#111827" stroke="#10b981" stroke-width="2" />
-              <text text-anchor="middle" dy="-5" fill="#fff" font-size="11" font-weight="700">Claude</text>
-              <text text-anchor="middle" dy="12" fill="#10b981" font-size="9">Native AX</text>
-            </g>
-            <g transform="translate(100, 210)">
-              <circle r="36" fill="#111827" stroke="#6366f1" stroke-width="2" />
-              <text text-anchor="middle" dy="-5" fill="#fff" font-size="11" font-weight="700">ChatGPT</text>
-              <text text-anchor="middle" dy="12" fill="#6366f1" font-size="9">CDP Port</text>
-            </g>
-            <g transform="translate(400, 210)">
-              <circle r="36" fill="#111827" stroke="#8b5cf6" stroke-width="2" />
-              <text text-anchor="middle" dy="-5" fill="#fff" font-size="11" font-weight="700">Bridge</text>
-              <text text-anchor="middle" dy="12" fill="#8b5cf6" font-size="9">Core Hub</text>
-            </g>
-          </svg>
-        </div>
-        <div style="font-size: 0.8rem; color: var(--text-dim); margin-top: 0.5rem;">
-          Selected Active Edge: <span style="color: var(--accent-cyan); font-family: monospace;">gemini &rarr; claude-desktop [REDACTED_PROMPT len=184 hash=9f1a2e snippet="Review PR security bounds..."]</span>
+        <div class="graph-container" id="graph-container">
+          <div style="padding: 2rem; text-align: center; color: var(--text-muted);" id="graph-status">
+            Loading active agent graph from real ledger...
+          </div>
         </div>
       </div>
 
@@ -497,29 +465,8 @@
           <span style="font-size: 0.75rem; color: var(--text-dim);">High-Res Monotonic Clock</span>
         </div>
         <div class="waterfall-list" id="waterfall-container">
-          <div class="wf-row">
-            <div class="wf-meta">
-              <span>req_8819: gemini &rarr; claude-desktop</span>
-              <span class="wf-evidence">Evidence: confirmed_nonce (361ms)</span>
-            </div>
-            <div class="wf-track">
-              <div class="wf-bar stage-accepted" style="width: 2%;"></div>
-              <div class="wf-bar stage-claimed" style="width: 4%;"></div>
-              <div class="wf-bar stage-delivered" style="width: 14%;"></div>
-              <div class="wf-bar stage-first_byte" style="width: 32%;"></div>
-              <div class="wf-bar stage-complete" style="width: 48%;"></div>
-            </div>
-          </div>
-          <div class="wf-row" style="border-left-color: var(--accent-rose);">
-            <div class="wf-meta">
-              <span>req_8820: claude-desktop &rarr; external-agent</span>
-              <span class="wf-evidence" style="background: rgba(244, 63, 94, 0.2); color: #fca5a5;">Failed at Stage: delivered</span>
-            </div>
-            <div class="wf-track">
-              <div class="wf-bar stage-accepted" style="width: 2%;"></div>
-              <div class="wf-bar stage-claimed" style="width: 5%;"></div>
-              <div class="wf-bar" style="width: 93%; background: var(--accent-rose);"></div>
-            </div>
+          <div style="padding: 1.5rem; text-align: center; color: var(--text-muted);">
+            No in-flight or recorded request waterfall events.
           </div>
         </div>
       </div>
@@ -542,35 +489,8 @@
               <th>Last Canary</th>
             </tr>
           </thead>
-          <tbody>
-            <tr>
-              <td><strong>gemini</strong></td>
-              <td><span class="badge-ready">READY</span></td>
-              <td>MCP (Stdio)</td>
-              <td><span class="badge-live">LIVE-VERIFIED</span></td>
-              <td>PASS (42ms)</td>
-            </tr>
-            <tr>
-              <td><strong>chatgpt-desktop</strong></td>
-              <td><span class="badge-ready">READY</span></td>
-              <td>Chromium CDP</td>
-              <td><span class="badge-live">TEST-PROVEN</span></td>
-              <td>PASS (115ms)</td>
-            </tr>
-            <tr>
-              <td><strong>claude-desktop</strong></td>
-              <td><span class="badge-ready">READY</span></td>
-              <td>Native AX</td>
-              <td><span class="badge-live">TEST-PROVEN</span></td>
-              <td>PASS (89ms)</td>
-            </tr>
-            <tr>
-              <td><strong>mock-worker</strong></td>
-              <td><span class="badge-ready">READY</span></td>
-              <td>Mock Loopback</td>
-              <td><span style="color: var(--text-dim);">MOCK-ONLY</span></td>
-              <td>PASS (1ms)</td>
-            </tr>
+          <tbody id="health-table-body">
+            <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Loading health from presence manager...</td></tr>
           </tbody>
         </table>
       </div>
@@ -580,44 +500,15 @@
         <div class="section-header">
           <h2>Approvals Inbox (Human-in-the-Loop)</h2>
         </div>
-        <div style="display: flex; flex-direction: column; gap: 1rem;">
-          <div class="approval-item" id="approval-item-1">
-            <div>
-              <div style="font-weight: 600; font-size: 0.9rem;">Skill Install: security-harden-audit</div>
-              <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.2rem;">
-                Requested Permissions: <code style="color: var(--accent-cyan);">read:files, execute:tests</code>
-              </div>
-              <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.2rem;">
-                Hash: <code style="color: #94a3b8;">sha256:7b1e4f...</code> &bull; Diff: +24 lines in SKILL.md
-              </div>
-            </div>
-            <div style="display: flex; gap: 0.5rem;">
-              <button class="btn-approve" onclick="handleDecision('approve')">Approve</button>
-              <button class="btn-reject" onclick="handleDecision('reject')">Reject</button>
-            </div>
-          </div>
+        <div id="approvals-container" style="display: flex; flex-direction: column; gap: 1rem;">
+          <div style="color: var(--text-muted); font-size: 0.85rem;">Loading pending approvals...</div>
         </div>
 
         <div class="section-header" style="margin-top: 1.5rem;">
           <h2>Time-Travel Replay <span style="font-size: 0.75rem; color: var(--text-dim);">(Read-Only Ledger)</span></h2>
         </div>
-        <div class="timeline-scrubber">
-          <div class="replay-hop">
-            <div class="replay-hop-header">
-              <span>Hop 1: gemini &rarr; chatgpt-desktop</span>
-              <span>240ms &bull; 380 tokens</span>
-            </div>
-            <div class="replay-prompt">[REDACTED_PROMPT len=112 hash=3a9f1b snippet="Check SQL migration plan for SQLite..."]</div>
-            <div class="replay-decision">&bull; Adopt SQLite WAL mode with 5000ms busy timeout</div>
-          </div>
-          <div class="replay-hop">
-            <div class="replay-hop-header">
-              <span>Hop 2: chatgpt-desktop &rarr; claude-desktop</span>
-              <span>180ms &bull; 195 tokens</span>
-            </div>
-            <div class="replay-prompt">[REDACTED_PROMPT len=84 hash=4e8c11 snippet="Generate unified diff for db/connect..."]</div>
-            <div class="replay-decision">&bull; Unified diff verified conforming to unified diff grammar</div>
-          </div>
+        <div class="timeline-scrubber" id="replay-container">
+          <div style="color: var(--text-muted); font-size: 0.85rem;">No active replay session available.</div>
         </div>
       </div>
     </div>
@@ -629,13 +520,133 @@
   </footer>
 
   <script>
-    function handleDecision(action) {
-      const el = document.getElementById('approval-item-1');
-      if (el) {
-        el.style.opacity = '0.5';
-        el.innerHTML = '<div style="color: var(--accent-emerald); font-weight: 600;">Action recorded: ' + action.toUpperCase() + ' (Audited)</div>';
+    function getToken() {
+      const urlParam = new URLSearchParams(window.location.search).get('token');
+      if (urlParam) {
+        sessionStorage.setItem('dashboard_token', urlParam);
+        return urlParam;
+      }
+      return sessionStorage.getItem('dashboard_token') || '';
+    }
+
+    async function fetchWithAuth(endpoint, options = {}) {
+      const token = getToken();
+      const headers = {
+        'Authorization': 'Bearer ' + token,
+        ...(options.headers || {})
+      };
+      return fetch(endpoint, { ...options, headers });
+    }
+
+    async function loadTokens() {
+      try {
+        const res = await fetchWithAuth('/api/tokens');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (typeof data.tokensIn === 'number' && typeof data.tokensOut === 'number') {
+          const total = data.tokensIn + data.tokensOut;
+          document.getElementById('val-tokens-used').textContent = total.toLocaleString();
+          document.getElementById('val-tokens-sub').textContent = `${data.tokensIn.toLocaleString()} In • ${data.tokensOut.toLocaleString()} Out`;
+        }
+        if (data.tokensSavedVersusManualCopyPaste !== null && data.tokensSavedVersusManualCopyPaste !== undefined) {
+          document.getElementById('val-tokens-saved').textContent = `+${data.tokensSavedVersusManualCopyPaste.toLocaleString()}`;
+        }
+        if (data.savingsPercentage) {
+          document.getElementById('val-savings-pct').textContent = `${data.savingsPercentage} Token Reduction`;
+        }
+        if (data.tokensSavedByReference !== undefined) {
+          document.getElementById('val-cas-saved').textContent = data.tokensSavedByReference.toLocaleString();
+        }
+        if (data.cacheHits !== undefined) {
+          document.getElementById('val-cache-hits').textContent = data.cacheHits.toLocaleString();
+        }
+      } catch {}
+    }
+
+    async function loadHealth() {
+      try {
+        const res = await fetchWithAuth('/api/health');
+        if (!res.ok) return;
+        const data = await res.json();
+        const tbody = document.getElementById('health-table-body');
+        if (!data.agents || data.agents.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">No agents registered.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = data.agents.map(a => `
+          <tr>
+            <td><strong>${a.id}</strong></td>
+            <td><span class="badge-ready">${a.status || 'READY'}</span></td>
+            <td>${a.route || 'mcp'}</td>
+            <td><span class="badge-live">${a.evidenceLevel || 'UNVERIFIED'}</span></td>
+            <td>${a.lastCanary || '—'}</td>
+          </tr>
+        `).join('');
+      } catch {}
+    }
+
+    async function loadApprovals() {
+      try {
+        const res = await fetchWithAuth('/api/approvals');
+        if (!res.ok) return;
+        const data = await res.json();
+        const container = document.getElementById('approvals-container');
+        const items = data.items || [];
+        if (items.length === 0) {
+          container.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No pending approvals.</div>';
+          return;
+        }
+        container.innerHTML = items.map(item => `
+          <div class="approval-item" id="approval-item-${item.id}">
+            <div>
+              <div style="font-weight: 600; font-size: 0.9rem;">${item.type}: ${item.target}</div>
+              <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.2rem;">
+                Requested Permissions: <code style="color: var(--accent-cyan);">${(item.permissionsRequested || []).join(', ')}</code>
+              </div>
+              <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.2rem;">
+                ${item.diffSummary || ''}
+              </div>
+            </div>
+            <div style="display: flex; gap: 0.5rem;">
+              <button class="btn-approve" onclick="handleDecision('${item.id}', 'approve')">Approve</button>
+              <button class="btn-reject" onclick="handleDecision('${item.id}', 'reject')">Reject</button>
+            </div>
+          </div>
+        `).join('');
+      } catch {}
+    }
+
+    async function handleDecision(approvalId, decision) {
+      try {
+        const res = await fetchWithAuth('/api/approvals', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Approver-Identity': 'user'
+          },
+          body: JSON.stringify({ approvalId, decision })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          const el = document.getElementById('approval-item-' + approvalId);
+          if (el) {
+            el.innerHTML = '<div style="color: var(--accent-emerald); font-weight: 600;">Action recorded: ' + decision.toUpperCase() + ' (Audited)</div>';
+          }
+          setTimeout(loadApprovals, 1500);
+        } else {
+          alert('Approval failed: ' + (data.error || 'Unknown error'));
+        }
+      } catch (err) {
+        alert('Request failed: ' + err.message);
       }
     }
+
+    // Initialize on page load
+    window.addEventListener('DOMContentLoaded', () => {
+      loadTokens();
+      loadHealth();
+      loadApprovals();
+    });
   </script>
 </body>
 </html>

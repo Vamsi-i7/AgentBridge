@@ -43,6 +43,7 @@ test('Security 5.0 Authorization & Boundary Enforcement Suite', async (t) => {
   // Helper to execute tools through registry
   const execTool = async (name, args, callerContext = {}) => {
     return toolRegistry.executeTool(name, args, {
+      agentId: callerContext.agentId || args?.agentId,
       mailbox,
       taskManager,
       logger,

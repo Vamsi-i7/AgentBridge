@@ -70,9 +70,9 @@ export class A2AAdapter {
 
     // 1. Authorize caller via Agent Identity & token
     const callerId = authContext.agentId || 'anonymous';
-    if (this.permissionGuard) {
-      const allowed = this.permissionGuard.checkPermission(callerId, 'a2a:rpc', { method: request.method });
-      if (!allowed) {
+    if (this.permissionGuard && typeof this.permissionGuard.checkPermission === 'function') {
+      const check = this.permissionGuard.checkPermission(callerId, 'DELEGATE');
+      if (check && check.allowed === false) {
         return {
           jsonrpc: '2.0',
           id: request.id,

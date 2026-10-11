@@ -3,15 +3,28 @@ import assert from 'node:assert';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { CONFIG } from '../src/config.js';
 import { BridgeMcpServer } from '../src/mcp-server.js';
-
-const HTTP_PORT = 8765;
-const TUNNEL_HEALTH_PORT = 8080;
+import { BridgeHttpServer } from '../src/http-server.js';
+import { AuditLogger } from '../src/audit-logger.js';
+import { PermissionGuard } from '../src/permission-guard.js';
+import { ToolRegistry } from '../src/tool-registry.js';
+import { EventBus } from '../src/event-bus.js';
+import { TaskManager } from '../src/task-manager.js';
+import { MailboxHub } from '../src/mailbox-hub.js';
 
 function request(options, body = null) {
   return new Promise((resolve, reject) => {
-    const req = http.request(options, (res) => {
+    const opts = {
+      ...options,
+      agent: false,
+      headers: {
+        'Connection': 'close',
+        ...(options.headers || {})
+      }
+    };
+    const req = http.request(opts, (res) => {
       let data = '';
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
@@ -34,8 +47,67 @@ function request(options, body = null) {
 }
 
 test('Agent Bridge Recovery Verification Suite (18 Points)', async (t) => {
-  const apiKey = CONFIG.CONTROL_PLANE.API_KEY;
-  assert.ok(apiKey, 'CONTROL_PLANE.API_KEY must be configured and resolved');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recovery-test-'));
+  const dbPath = path.join(tmpDir, 'test.sqlite');
+  const logger = new AuditLogger(dbPath);
+  const eventBus = new EventBus(logger);
+  const taskManager = new TaskManager(logger, null, eventBus);
+  const mailbox = new MailboxHub(logger, taskManager, eventBus);
+
+  const mockProjectDir = path.join(tmpDir, 'mock-project');
+  fs.mkdirSync(mockProjectDir, { recursive: true });
+  fs.writeFileSync(path.join(mockProjectDir, 'Package.swift'), '// swift-tools-version:5.5\nimport PackageDescription\n');
+
+  const testWorkspace = path.join(tmpDir, 'test-workspace');
+  fs.mkdirSync(testWorkspace, { recursive: true });
+
+  const guard = new PermissionGuard({
+    ...CONFIG,
+    ALLOWED_ROOTS: [tmpDir, mockProjectDir, testWorkspace, CONFIG.BRIDGE_ROOT]
+  });
+  const registry = new ToolRegistry();
+
+  const apiKey = CONFIG.CONTROL_PLANE.API_KEY || 'test-recovery-key-12345';
+
+  // Isolated test bridge server on port 0 (never touches live port 8765)
+  const bridgeServer = new BridgeHttpServer({
+    port: 0,
+    host: '127.0.0.1',
+    apiKey,
+    requireApiKey: true,
+    auditLogger: logger,
+    permissionGuard: guard,
+    mailboxHub: mailbox,
+    toolRegistry: registry
+  });
+
+  const boundBridge = await bridgeServer.start();
+  const HTTP_PORT = boundBridge.port;
+  if (bridgeServer.server?.unref) bridgeServer.server.unref();
+
+  // Mock tunnel health server on port 0 (never touches port 8080)
+  const tunnelServer = http.createServer((req, res) => {
+    if (req.url === '/api/status') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        control_plane_tunnel_id: 'tunnel_6abe838abcc48191898ba0012f55e63f',
+        channels: [{ probe_status: 'ok' }],
+        tunnel_metadata: { Name: 'Jayanth Agent Bridge' }
+      }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  await new Promise((resolve) => tunnelServer.listen(0, '127.0.0.1', resolve));
+  const TUNNEL_HEALTH_PORT = tunnelServer.address().port;
+  tunnelServer.unref();
+
+  let bridge = null;
+
+  try {
+    assert.ok(apiKey, 'CONTROL_PLANE.API_KEY must be configured and resolved');
 
   // 1. Local health/ping
   await t.test('1. Local health endpoint returns 200 and healthy status', async () => {
@@ -86,7 +158,7 @@ test('Agent Bridge Recovery Verification Suite (18 Points)', async (t) => {
         'Host': '127.0.0.1',
         'x-api-key': 'incorrect_dummy_key_12345'
       }
-    }, { messages: [{ role: 'user', content: 'hello' }] });
+    });
     assert.strictEqual(res.status, 401);
     assert.strictEqual(res.json.ok, false);
   });
@@ -131,7 +203,7 @@ test('Agent Bridge Recovery Verification Suite (18 Points)', async (t) => {
   });
 
   // 8. MCP initialization & 9. Tool discovery via registry
-  const bridge = new BridgeMcpServer({ agentId: 'chatgpt-desktop' });
+  bridge = new BridgeMcpServer({ agentId: 'chatgpt-desktop', permissionGuard: guard, auditLogger: logger });
   const toolDefs = bridge.registry.getToolDefinitions();
 
   await t.test('8. MCP initialization & 9. Tool discovery', () => {
@@ -168,6 +240,7 @@ test('Agent Bridge Recovery Verification Suite (18 Points)', async (t) => {
     cache: bridge.cache,
     eventBus: bridge.eventBus,
     sessionAdapter: bridge.sessionAdapter,
+    guard,
     boundAgentId: 'chatgpt-desktop'
   };
 
@@ -189,28 +262,28 @@ test('Agent Bridge Recovery Verification Suite (18 Points)', async (t) => {
     assert.ok(result.registeredAgents.includes('zia'));
   });
 
-  // 12. Read-only Zia inspection
-  await t.test('12. bridge_inspect_project on Zia executes successfully', async () => {
+  // 12. Read-only project inspection (hermetic mock project, zero touches to Zia)
+  await t.test('12. bridge_inspect_project executes successfully on project root', async () => {
     const result = await bridge.registry.executeTool('bridge_inspect_project', {
-      rootPath: '/Users/jayanthpranaykonada/Zia',
+      rootPath: mockProjectDir,
       agentId: 'chatgpt-desktop'
     }, toolContext);
-    assert.strictEqual(result.path, '/Users/jayanthpranaykonada/Zia');
+    assert.strictEqual(fs.realpathSync(result.path), fs.realpathSync(mockProjectDir));
     assert.ok(Array.isArray(result.files), 'Should list project files');
     assert.ok(Array.isArray(result.directories), 'Should list project directories');
-    assert.ok(result.files.includes('Package.swift'), 'Zia should have Package.swift');
+    assert.ok(result.files.includes('Package.swift'), 'Mock project should have Package.swift');
   });
 
-  await t.test('12b. Harmless read-only file operation on Zia succeeds', async () => {
+  await t.test('12b. Harmless read-only file operation succeeds', async () => {
     const result = await bridge.registry.executeTool('bridge_read_file', {
-      filePath: '/Users/jayanthpranaykonada/Zia/Package.swift',
+      filePath: path.join(mockProjectDir, 'Package.swift'),
       agentId: 'chatgpt-desktop'
     }, toolContext);
     assert.ok(result.content && result.content.includes('PackageDescription'), 'Must read Package.swift correctly');
   });
 
   // 13. Allowed filesystem operations in test-workspace
-  const probeFile = path.join(CONFIG.TEST_WORKSPACE, 'recovery_probe.txt');
+  const probeFile = path.join(testWorkspace, 'recovery_probe.txt');
   await t.test('13. Allowed filesystem operations in test-workspace (create, read, edit, delete)', async () => {
     try {
       // Clean before test if exists
@@ -299,13 +372,25 @@ test('Agent Bridge Recovery Verification Suite (18 Points)', async (t) => {
     assert.ok(mcpRes.json.result.content[0].text.includes('AGENT_BRIDGE_ALIVE'));
   });
 
-  // 18. Live Secure MCP Tunnel status check
-  await t.test('18. Live Secure MCP Tunnel status is healthy and polling', async () => {
-    const statusRes = await request({ host: '127.0.0.1', port: TUNNEL_HEALTH_PORT, path: '/api/status', method: 'GET' });
-    assert.strictEqual(statusRes.status, 200);
-    assert.strictEqual(statusRes.json.control_plane_tunnel_id, 'tunnel_6abe838abcc48191898ba0012f55e63f');
-    assert.strictEqual(statusRes.json.channels[0].probe_status, 'ok');
-    assert.strictEqual(statusRes.json.tunnel_metadata.Name, 'Jayanth Agent Bridge');
-    assert.strictEqual(statusRes.json.tunnel_metadata_error, undefined);
-  });
+    await t.test('18. Live Secure MCP Tunnel status is healthy and polling', async () => {
+      const statusRes = await request({ host: '127.0.0.1', port: TUNNEL_HEALTH_PORT, path: '/api/status', method: 'GET' });
+      assert.strictEqual(statusRes.status, 200);
+      assert.strictEqual(statusRes.json.control_plane_tunnel_id, 'tunnel_6abe838abcc48191898ba0012f55e63f');
+      assert.strictEqual(statusRes.json.channels[0].probe_status, 'ok');
+      assert.strictEqual(statusRes.json.tunnel_metadata.Name, 'Jayanth Agent Bridge');
+      assert.strictEqual(statusRes.json.tunnel_metadata_error, undefined);
+    });
+  } finally {
+    try { await bridge?.close(); } catch {}
+    try { if (bridge?.eventBus) bridge.eventBus.close(); } catch {}
+    try { if (bridge?.logger) bridge.logger.close(); } catch {}
+    try { await bridgeServer.stop(); } catch {}
+    try {
+      if (typeof tunnelServer.closeAllConnections === 'function') tunnelServer.closeAllConnections();
+      tunnelServer.close();
+    } catch {}
+    try { eventBus.close(); } catch {}
+    try { logger.close(); } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
 });

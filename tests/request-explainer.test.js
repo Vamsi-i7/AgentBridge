@@ -47,7 +47,7 @@ test('RequestExplainer: Deep Lifecycle Observability & Causal Tracing', async (t
   });
 
   await t.test('1. explainRequest produces chronological causal timeline', () => {
-    const trace = explainer.explainRequest('req_obs_1');
+    const trace = explainer.explainRequest('req_obs_1', 'antigravity-ide');
     assert.equal(trace.found, true);
     assert.equal(trace.requestId, 'req_obs_1');
     assert.equal(trace.fromAgent, 'antigravity-ide');
@@ -65,7 +65,7 @@ test('RequestExplainer: Deep Lifecycle Observability & Causal Tracing', async (t
 
   await t.test('2. bridge_explain_request tool returns trace', async () => {
     const registry = new ToolRegistry();
-    const ctx = { requestExplainer: explainer };
+    const ctx = { agentId: 'antigravity-ide', requestExplainer: explainer };
 
     const res = await registry.executeTool('bridge_explain_request', { requestId: 'req_obs_1' }, ctx);
     assert.equal(res.found, true);

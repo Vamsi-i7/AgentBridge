@@ -14,12 +14,22 @@ import { TokenAccountant } from './telemetry/token-accountant.js';
 import { CONFIG } from './config.js';
 import { normalizeAgentId } from './agent-identity.js';
 import { isEffectfulTool } from './effects/effects-ledger.js';
+import { CheapFirstRouter } from './routing/cheap-first-router.js';
+import { SemanticCache } from './cache/semantic-cache.js';
+
+export const CONFIDENCE_RANK = Object.freeze({
+  STABILITY_HEURISTIC: 1,
+  INDICATOR_BASED: 2,
+  EXPLICIT_END_OF_TURN: 3,
+  AUTHENTICATED_SUBMIT: 4
+});
 
 export const TERMINAL_REQUEST_STATES = Object.freeze(new Set([
   'completed',
   'failed',
   'cancelled',
-  'quarantined'
+  'quarantined',
+  'delivery_uncertain'
 ]));
 
 export class MailboxHub {
@@ -34,6 +44,9 @@ export class MailboxHub {
       if (this.tasks.outbox) {
         this.tasks.outbox.eventBus = this.eventBus;
       }
+    }
+    if (this.tasks) {
+      this.tasks.mailboxHub = this;
     }
     this.agentHandlers = new Map(); // agentId -> async (question, context) => response
 
@@ -53,7 +66,13 @@ export class MailboxHub {
     if (this.eventBus && !this.eventBus.tracer) {
       this.eventBus.tracer = this.tracer;
     }
+    this.cheapRouter = new CheapFirstRouter({ auditLogger });
+    this.semanticCache = new SemanticCache();
+    this._recoveryTimer = null;
     this._ensureRequestColumns();
+    if (this.db) {
+      this.startRecoveryTimer(Number(process.env.AGENT_BRIDGE_RECOVERY_INTERVAL_MS) || 2000);
+    }
   }
 
   _ensureRequestColumns() {
@@ -72,6 +91,15 @@ export class MailboxHub {
         }
         if (!colNames.has('epoch')) {
           this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN epoch INTEGER;`);
+        }
+        if (!colNames.has('submitted_to_provider')) {
+          this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN submitted_to_provider INTEGER DEFAULT 0;`);
+        }
+        if (!colNames.has('delivery_state')) {
+          this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN delivery_state TEXT;`);
+        }
+        if (!colNames.has('is_idempotent')) {
+          this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN is_idempotent INTEGER DEFAULT 0;`);
         }
       } catch {}
     }
@@ -149,6 +177,7 @@ export class MailboxHub {
 
     let attemptId = null;
     let epoch = 1;
+    let nonce = null;
 
     // If backing task exists, integrate with TaskManager attempt tracking
     if (reqRow.task_id && this.tasks) {
@@ -157,6 +186,7 @@ export class MailboxHub {
         if (claimedTask) {
           attemptId = claimedTask.attemptId || null;
           epoch = claimedTask.epoch || 1;
+          nonce = claimedTask.nonce || null;
         } else if (this.tasks.attempts) {
           const att = this.tasks.attempts.createAttempt({
             taskId: reqRow.task_id,
@@ -166,6 +196,7 @@ export class MailboxHub {
           this.tasks.attempts.acquireAttempt(att.attemptId, agentId);
           attemptId = att.attemptId;
           epoch = att.epoch;
+          nonce = att.nonce;
         }
       } catch {}
     }
@@ -173,6 +204,9 @@ export class MailboxHub {
     if (!attemptId) {
       attemptId = `req_att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       epoch = (reqRow.epoch || 0) + 1;
+    }
+    if (!nonce) {
+      nonce = `non_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     }
 
     // Atomic conditional update on bridge_requests
@@ -207,6 +241,7 @@ export class MailboxHub {
       taskId: reqRow.task_id,
       attemptId,
       epoch,
+      nonce,
       claimedBy: claimerId,
       leaseExpiresAt,
       request: updatedRow
@@ -235,27 +270,170 @@ export class MailboxHub {
     }
   }
 
-  recoverExpiredRequests(agentId = null) {
+  markPromptSubmitted(requestId) {
+    if (!requestId || !this.db) return false;
+    this._ensureRequestColumns();
     const now = new Date().toISOString();
     try {
-      let stmt;
-      if (agentId) {
-        stmt = this.db.prepare(`
-          UPDATE bridge_requests
-          SET status = 'pending', claimed_by = NULL, lease_expires_at = NULL, updated_at = ?
-          WHERE to_agent = ? AND status IN ('claimed', 'in_progress') AND lease_expires_at IS NOT NULL AND lease_expires_at < ?
-        `);
-        return stmt.run(now, agentId, now);
-      } else {
-        stmt = this.db.prepare(`
-          UPDATE bridge_requests
-          SET status = 'pending', claimed_by = NULL, lease_expires_at = NULL, updated_at = ?
-          WHERE status IN ('claimed', 'in_progress') AND lease_expires_at IS NOT NULL AND lease_expires_at < ?
-        `);
-        return stmt.run(now, now);
-      }
+      const res = this.db.prepare(`
+        UPDATE bridge_requests
+        SET submitted_to_provider = 1,
+            delivery_state = 'PROMPT_SUBMITTED',
+            updated_at = ?
+        WHERE request_id = ? AND status IN ('claimed', 'in_progress')
+      `).run(now, requestId);
+      return res.changes > 0;
     } catch {
-      return { changes: 0 };
+      return false;
+    }
+  }
+
+  markPromptSettled(requestId) {
+    if (!requestId || !this.db) return false;
+    this._ensureRequestColumns();
+    const now = new Date().toISOString();
+    try {
+      const res = this.db.prepare(`
+        UPDATE bridge_requests
+        SET submitted_to_provider = 0,
+            delivery_state = 'SETTLED',
+            updated_at = ?
+        WHERE request_id = ?
+      `).run(now, requestId);
+      return res.changes > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  recoverExpiredRequests(agentId = null) {
+    if (!this.db) return { changes: 0, recovered: [], uncertain: [] };
+    this._ensureRequestColumns();
+    const now = new Date().toISOString();
+    const recovered = [];
+    const uncertain = [];
+
+    try {
+      let query = `
+        SELECT * FROM bridge_requests
+        WHERE status IN ('claimed', 'in_progress')
+          AND lease_expires_at IS NOT NULL
+          AND lease_expires_at < ?
+      `;
+      const params = [now];
+      if (agentId) {
+        query += ' AND to_agent = ?';
+        params.push(agentId);
+      }
+
+      const rows = this.db.prepare(query).all(...params);
+      for (const row of rows) {
+        let isIdempotent = Boolean(row.is_idempotent);
+        if (!isIdempotent && row.context) {
+          try {
+            const parsedCtx = typeof row.context === 'string' ? JSON.parse(row.context) : row.context;
+            if (parsedCtx?.isIdempotent === true || parsedCtx?.originalContext?.isIdempotent === true) {
+              isIdempotent = true;
+            }
+          } catch {}
+        }
+
+        const nextEpoch = (row.epoch || 1) + 1;
+
+        if (row.submitted_to_provider || row.delivery_state === 'PROMPT_SUBMITTED') {
+          if (!isIdempotent) {
+            const errorMsg = `DELIVERY_UNCERTAIN: Worker lease expired after prompt was submitted to provider. Blind re-injection denied because request is not declared idempotent.`;
+            this.db.prepare(`
+              UPDATE bridge_requests
+              SET status = 'delivery_uncertain',
+                  delivery_state = 'DELIVERY_UNCERTAIN',
+                  error = ?,
+                  epoch = ?,
+                  claimed_by = NULL,
+                  lease_expires_at = NULL,
+                  updated_at = ?
+              WHERE request_id = ?
+            `).run(errorMsg, nextEpoch, now, row.request_id);
+
+            uncertain.push({ requestId: row.request_id, epoch: nextEpoch, error: errorMsg });
+            this.logger?.log?.({
+              agentId: row.to_agent || 'system',
+              action: 'request_delivery_uncertain',
+              status: 'delivery_uncertain',
+              details: { requestId: row.request_id, epoch: nextEpoch, reason: errorMsg }
+            });
+            continue;
+          }
+        }
+
+        this.db.prepare(`
+          UPDATE bridge_requests
+          SET status = 'pending',
+              delivery_state = 'RECOVERED_PENDING',
+              submitted_to_provider = 0,
+              claimed_by = NULL,
+              lease_expires_at = NULL,
+              epoch = ?,
+              updated_at = ?
+          WHERE request_id = ?
+        `).run(nextEpoch, now, row.request_id);
+
+        recovered.push({ requestId: row.request_id, epoch: nextEpoch });
+        this.logger?.log?.({
+          agentId: row.to_agent || 'system',
+          action: 'recover_expired_request',
+          status: 'pending',
+          details: { requestId: row.request_id, epoch: nextEpoch }
+        });
+      }
+    } catch (err) {
+      this.logger?.debug?.('Error in recoverExpiredRequests', err);
+    }
+
+    const totalChanges = recovered.length + uncertain.length;
+    return { changes: totalChanges, recovered, uncertain };
+  }
+
+  startRecoveryTimer(intervalMs = 2000) {
+    if (this._recoveryTimer) return this._recoveryTimer;
+    try {
+      this.runRecoverySweep();
+    } catch {}
+
+    this._recoveryTimer = setInterval(() => {
+      try {
+        this.runRecoverySweep();
+      } catch (err) {
+        this.logger?.debug?.('Recovery sweep error', err);
+      }
+    }, intervalMs);
+
+    if (this._recoveryTimer.unref) {
+      this._recoveryTimer.unref();
+    }
+    return this._recoveryTimer;
+  }
+
+  stopRecoveryTimer() {
+    if (this._recoveryTimer) {
+      clearInterval(this._recoveryTimer);
+      this._recoveryTimer = null;
+    }
+  }
+
+  runRecoverySweep() {
+    const sweep = {
+      requests: this.recoverExpiredRequests(),
+      tasks: this.tasks?.recoverExpiredTasks ? this.tasks.recoverExpiredTasks() : [],
+      attempts: (this.tasks?.attempts?.recoverExpiredAttempts) ? this.tasks.attempts.recoverExpiredAttempts() : []
+    };
+    return sweep;
+  }
+
+  close() {
+    this.stopRecoveryTimer();
+    if (this.tasks?.close) {
+      try { this.tasks.close(); } catch {}
     }
   }
 
@@ -519,6 +697,33 @@ export class MailboxHub {
     return runWork();
   }
 
+  _resolveModelCounters(tokenMetrics, responseMode) {
+    if (!tokenMetrics) {
+      return {
+        additionalModelCalls: null,
+        additionalModelCallsReason: 'UNMEASURED_NO_TOKEN_METRICS',
+        modelRegenerationTokens: null,
+        modelRegenerationTokensReason: 'UNMEASURED_NO_TOKEN_METRICS'
+      };
+    }
+
+    const isDirect = (responseMode === ResponseMode.DIRECT || responseMode === 'direct');
+    const additionalModelCalls = tokenMetrics.savings?.directDeliveryBypassedModelCall
+      ? 0
+      : (tokenMetrics.categories?.D_receivingAgentReasoning > 0 ? 1 : (isDirect ? 0 : null));
+
+    const modelRegenerationTokens = tokenMetrics.categories?.E_receivingAgentRegeneration !== undefined
+      ? tokenMetrics.categories.E_receivingAgentRegeneration
+      : (isDirect ? 0 : null);
+
+    return {
+      additionalModelCalls,
+      additionalModelCallsReason: additionalModelCalls === null ? 'UNMEASURED_POST_PROCESSING' : null,
+      modelRegenerationTokens,
+      modelRegenerationTokensReason: modelRegenerationTokens === null ? 'UNMEASURED_POST_PROCESSING' : null
+    };
+  }
+
   /**
    * Active Request/Response Channel with cross-process waiter:
    * Keeps caller attached to correlated response channel without manual polling.
@@ -535,7 +740,8 @@ export class MailboxHub {
     // allowing callers to override the timeout explicitly.
     timeoutMs = 90000,
     asyncMode = false,
-    responseMode = null
+    responseMode = null,
+    isIdempotent = false
   }) {
     const normFrom = normalizeAgentId(fromAgent) || fromAgent;
     const normTo = normalizeAgentId(toAgent) || toAgent;
@@ -557,7 +763,15 @@ export class MailboxHub {
       });
     }
 
-    if (!toAgent) {
+    let resolvedTo = normTo || toAgent;
+    if (!resolvedTo && this.cheapRouter && this.cheapRouter.enabled) {
+      const decision = this.cheapRouter.selectAgent({ toAgent: null, type: arguments[0]?.taskType }, ['gemini', 'freebuff', 'claude-desktop']);
+      if (decision?.selectedAgent) {
+        resolvedTo = decision.selectedAgent;
+      }
+    }
+
+    if (!resolvedTo) {
       return {
         mode: 'request_failed',
         fromAgent: normFrom,
@@ -569,6 +783,26 @@ export class MailboxHub {
         status: 'failed',
         error: 'EXECUTION_UNSUPPORTED: Target agent must be specified'
       };
+    }
+
+    // Semantic read-only query cache (strictly opt-in, disabled by default)
+    if (this.semanticCache && this.semanticCache.enabled && this.semanticCache.isCacheable('READ', question)) {
+      const hit = this.semanticCache.get(question);
+      if (hit && hit.hit) {
+        return {
+          mode: 'direct',
+          fromAgent: normFrom,
+          toAgent: resolvedTo,
+          requestId: requestId || `req_cache_${Date.now()}`,
+          conversationId,
+          taskId: null,
+          question,
+          status: 'completed',
+          cached: true,
+          response: hit.response,
+          result: { response: hit.response, cached: true }
+        };
+      }
     }
 
     const timestamp = new Date().toISOString();
@@ -691,8 +925,8 @@ export class MailboxHub {
         bridgeUnaltered: !isQuarantined && (resolvedMode === ResponseMode.DIRECT),
         untrustedData: true,
         quarantined: isQuarantined,
-        additionalModelCalls: 0,
-        modelRegenerationTokens: 0,
+        completionConfidence: 'EXPLICIT_END_OF_TURN',
+        ...this._resolveModelCounters(tokenMetrics, resolvedMode),
         timestamp
       };
     }
@@ -750,8 +984,8 @@ export class MailboxHub {
           bridgeUnaltered: !isQuarantined && (reqMode === ResponseMode.DIRECT),
           untrustedData: true,
           quarantined: isQuarantined,
-          additionalModelCalls: 0,
-          modelRegenerationTokens: 0,
+          completionConfidence: artifact?.executionMetadata?.completionConfidence || 'EXPLICIT_END_OF_TURN',
+          ...this._resolveModelCounters(tokenMetrics, reqMode),
           timestamp: existingReq.completed_at || existingReq.updated_at
         };
       }
@@ -856,8 +1090,8 @@ export class MailboxHub {
           bridgeUnaltered: !isQuarantined && (reqMode === ResponseMode.DIRECT),
           untrustedData: true,
           quarantined: isQuarantined,
-          additionalModelCalls: 0,
-          modelRegenerationTokens: 0,
+          completionConfidence: outcome?.completionConfidence || artifact?.executionMetadata?.completionConfidence || 'EXPLICIT_END_OF_TURN',
+          ...this._resolveModelCounters(tokenMetrics, reqMode),
           timestamp: outcome.completedAt || new Date().toISOString()
         };
       } else if (outcome.status === 'timeout') {
@@ -943,6 +1177,13 @@ export class MailboxHub {
       targetDb.prepare(`
         UPDATE bridge_requests SET task_id = ? WHERE request_id = ?
       `).run(task.id, reqId);
+
+      const isIdempotentReq = Boolean(isIdempotent || context?.isIdempotent);
+      if (isIdempotentReq) {
+        try {
+          targetDb.prepare(`UPDATE bridge_requests SET is_idempotent = 1 WHERE request_id = ?`).run(reqId);
+        } catch {}
+      }
 
       if (stageEventFn) {
         stageEventFn({
@@ -1093,8 +1334,8 @@ export class MailboxHub {
         bridgeUnaltered: !isQuarantined && (resolvedMode === ResponseMode.DIRECT),
         untrustedData: true,
         quarantined: isQuarantined,
-        additionalModelCalls: 0,
-        modelRegenerationTokens: 0,
+        completionConfidence: outcome?.completionConfidence || artifact?.executionMetadata?.completionConfidence || 'EXPLICIT_END_OF_TURN',
+        ...this._resolveModelCounters(tokenMetrics, resolvedMode),
         timestamp: outcome.completedAt || new Date().toISOString()
       };
     } else if (outcome.status === 'timeout') {
@@ -1200,13 +1441,14 @@ export class MailboxHub {
         (ctxObj?.tool && isEffectfulTool(ctxObj.tool)) ||
         (existingTask?.tool && isEffectfulTool(existingTask.tool))
       );
-      const reqConfidence = existingTask?.requiredConfidence || ctxObj?.requiredConfidence || (hasSideEffects ? 'INDICATOR_BASED' : null);
+      const reqConfidence = existingTask?.requiredConfidence || ctxObj?.requiredConfidence || ctxObj?.originalContext?.requiredConfidence || (hasSideEffects ? 'INDICATOR_BASED' : null);
       const effectiveConfidence = completionConfidence || 'EXPLICIT_END_OF_TURN';
 
       const CONFIDENCE_RANK = {
         'STABILITY_HEURISTIC': 1,
         'INDICATOR_BASED': 2,
-        'EXPLICIT_END_OF_TURN': 3
+        'EXPLICIT_END_OF_TURN': 3,
+        'AUTHENTICATED_SUBMIT': 4
       };
 
       if (hasSideEffects && effectiveConfidence === 'STABILITY_HEURISTIC') {
@@ -1579,12 +1821,12 @@ export class MailboxHub {
   }
 
   _isAuthorizedParty(fromAgent, toAgent, caller) {
-    if (!caller) return true; // Direct internal / unauthenticated library call
+    if (!caller) return false; // Fails closed for null/unauthenticated caller
     if (typeof caller === 'object' && (caller.isPrivileged === true || caller.isInternal === true)) {
       return true;
     }
     const callerId = typeof caller === 'string' ? caller : caller.agentId;
-    if (!callerId) return true;
+    if (!callerId || callerId === 'anonymous') return false; // Anonymous identity has no access to private requests
     const normCaller = normalizeAgentId(callerId) || String(callerId).trim().toLowerCase();
     const normFrom = fromAgent ? (normalizeAgentId(fromAgent) || String(fromAgent).trim().toLowerCase()) : null;
     const normTo = toAgent ? (normalizeAgentId(toAgent) || String(toAgent).trim().toLowerCase()) : null;
@@ -1790,6 +2032,52 @@ export class MailboxHub {
       };
     }
 
+    // 3. Fencing validation if epoch tracked or attemptId provided
+    if (reqRow.epoch) {
+      if (!attemptId || epoch === null || epoch === undefined) {
+        const errMsg = `FENCED_ATTEMPT_ERROR: Request '${requestId}' has active epoch ${reqRow.epoch} (attempt '${reqRow.attempt_id}'). Result submission requires matching attemptId and epoch tokens.`;
+        if (this.tasks?.attempts) {
+          try {
+            this.tasks.attempts.quarantineLateResponse({
+              attemptId: attemptId || `missing_attempt_${requestId}`,
+              requestId,
+              epoch: Number(epoch) || 0,
+              payload: response || error,
+              reason: errMsg
+            });
+          } catch {}
+        }
+        return {
+          status: 'quarantined',
+          quarantined: true,
+          requestId,
+          error: errMsg
+        };
+      }
+      if (Number(epoch) !== reqRow.epoch || (reqRow.attempt_id && attemptId !== reqRow.attempt_id)) {
+        const errMsg = `FENCED_ATTEMPT_ERROR: Stale attempt '${attemptId}' (epoch ${epoch}) for request '${requestId}'. Current epoch is ${reqRow.epoch}.`;
+        if (this.tasks?.attempts) {
+          try {
+            this.tasks.attempts.quarantineLateResponse({
+              attemptId,
+              requestId,
+              epoch: Number(epoch) || 0,
+              payload: response || error,
+              reason: errMsg
+            });
+          } catch {}
+        }
+        return {
+          status: 'quarantined',
+          quarantined: true,
+          requestId,
+          attemptId,
+          epoch,
+          error: errMsg
+        };
+      }
+    }
+
     if (reqRow.task_id) {
       return this.submitTaskResult({
         taskId: reqRow.task_id,
@@ -1820,12 +2108,13 @@ export class MailboxHub {
         reqContext?.hasSideEffects ||
         (reqContext?.tool && isEffectfulTool(reqContext.tool))
       );
-      const reqConfidence = reqContext?.requiredConfidence || (hasSideEffects ? 'INDICATOR_BASED' : null);
+      const reqConfidence = reqContext?.requiredConfidence || reqContext?.originalContext?.requiredConfidence || (hasSideEffects ? 'INDICATOR_BASED' : null);
 
       const CONFIDENCE_RANK = {
         'STABILITY_HEURISTIC': 1,
         'INDICATOR_BASED': 2,
-        'EXPLICIT_END_OF_TURN': 3
+        'EXPLICIT_END_OF_TURN': 3,
+        'AUTHENTICATED_SUBMIT': 4
       };
 
       if (hasSideEffects && effectiveConfidence === 'STABILITY_HEURISTIC') {

@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import { CONFIG } from './config.js';
 import { isRegisteredVerificationToken } from './security/verification-tokens.js';
 
+import { getAgentManifest } from './capabilities/agent-manifest.js';
+
 export const AGENT_ALIASES = Object.freeze({
   'claude': 'claude-desktop',
   'claude-desktop': 'claude-desktop',
@@ -20,7 +22,12 @@ export const AGENT_ALIASES = Object.freeze({
 export function normalizeAgentId(agentId) {
   if (!agentId || typeof agentId !== 'string') return null;
   const lower = agentId.trim().toLowerCase();
-  return AGENT_ALIASES[lower] || lower;
+  if (AGENT_ALIASES[lower]) return AGENT_ALIASES[lower];
+  try {
+    const manifest = getAgentManifest(lower);
+    if (manifest) return manifest.agentId;
+  } catch {}
+  return lower;
 }
 
 export class AgentIdentityManager {
@@ -163,7 +170,7 @@ export class AgentIdentityManager {
         return {
           authenticated: false,
           compatibilityMode: true,
-          agentId: 'freebuff',
+          agentId: 'anonymous',
           method: 'unbound_demoted_from_system'
         };
       }
@@ -190,7 +197,7 @@ export class AgentIdentityManager {
 
     return {
       authenticated: false,
-      agentId: 'freebuff',
+      agentId: 'anonymous',
       method: 'default_fallback'
     };
   }

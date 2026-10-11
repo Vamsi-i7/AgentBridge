@@ -38,6 +38,7 @@ export class DesktopAgentWorker extends EventEmitter {
   constructor({
     agentId,
     mailboxHub = null,
+    mailbox = null,
     eventBus = null,
     presenceManager = null,
     session = null,
@@ -50,8 +51,8 @@ export class DesktopAgentWorker extends EventEmitter {
     if (!agentId) throw new Error('DesktopAgentWorker requires an agentId');
     if (!session) throw new Error(`DesktopAgentWorker(${agentId}) requires a session`);
     this.agentId = agentId;
-    this.mailbox = mailboxHub;
-    this.eventBus = eventBus || mailboxHub?.eventBus || null;
+    this.mailbox = mailboxHub || mailbox;
+    this.eventBus = eventBus || this.mailbox?.eventBus || null;
     this.presence = presenceManager || null;
     this.session = session;
     this.logger = logger || mailboxHub?.logger || null;
@@ -222,6 +223,7 @@ export class DesktopAgentWorker extends EventEmitter {
       }
       if (claimResult.attemptId) request.attemptId = claimResult.attemptId;
       if (claimResult.epoch) request.epoch = claimResult.epoch;
+      if (claimResult.nonce) request.nonce = claimResult.nonce;
     }
 
     this.status = DesktopAgentWorkerStatus.DELIVERING;
@@ -331,7 +333,65 @@ export class DesktopAgentWorker extends EventEmitter {
       }
 
       this._trace(requestId, LifecycleStage.PROVIDER_SUBMITTED, { session: this.session?.name || null }, request.taskId);
-      const result = await this.session.send({ text: request.question || '', requestId });
+      if (this.mailbox?.markPromptSubmitted) {
+        this.mailbox.markPromptSubmitted(requestId);
+      }
+
+      let promptText = request.question || '';
+      if (request.attemptId && request.epoch) {
+        const protocolToken = {
+          requestId,
+          attemptId: request.attemptId,
+          epoch: request.epoch,
+          nonce: request.nonce || null
+        };
+        promptText += `\n\n[Agent Bridge Protocol: ${JSON.stringify(protocolToken)}]\nIf you have bridge tools, call bridge_answer_request or bridge_submit_task_result with these tokens to complete immediately.`;
+      }
+
+      let fastSub = null;
+      const fastPromise = new Promise((resolve) => {
+        if (this.eventBus) {
+          const checkEv = (ev) => {
+            if (ev && (ev.type === 'response_delivered' || ev.type === 'response_completed' || ev.type === 'response_ready') && ev.requestId === requestId) {
+              const conf = ev.completionConfidence || ev.payload?.completionConfidence;
+              if (conf === 'AUTHENTICATED_SUBMIT') {
+                try {
+                  if (typeof this.session?.cancel === 'function') {
+                    this.session.cancel(requestId);
+                  }
+                } catch {}
+                resolve({
+                  success: true,
+                  status: 'COMPLETED_AUTHENTICATED_SUBMIT',
+                  response: ev.payload?.snippet || ev.payload?.response || ev.response || ev.result,
+                  completionConfidence: 'AUTHENTICATED_SUBMIT',
+                  observedSignals: ['AUTHENTICATED_SUBMIT_FAST_PATH']
+                });
+              }
+            }
+          };
+          const sub1 = this.eventBus.subscribe(this.agentId, checkEv);
+          const sub2 = request.fromAgent ? this.eventBus.subscribe(request.fromAgent, checkEv) : null;
+          const sub3 = this.eventBus.subscribe('*', checkEv);
+          fastSub = {
+            unsubscribe: () => {
+              try { sub1?.unsubscribe(); } catch {}
+              try { sub2?.unsubscribe(); } catch {}
+              try { sub3?.unsubscribe(); } catch {}
+            }
+          };
+        }
+      });
+
+      const sessionPromise = this.session.send({ text: promptText, requestId });
+      const result = await Promise.race([sessionPromise, fastPromise]);
+      if (fastSub) {
+        try { fastSub.unsubscribe(); } catch {}
+      }
+
+      if (this.mailbox?.markPromptSettled) {
+        this.mailbox.markPromptSettled(requestId);
+      }
 
       const hasResponse = Boolean(result.success) && typeof result.response === 'string' && result.response.trim().length > 0;
       if (hasResponse) {

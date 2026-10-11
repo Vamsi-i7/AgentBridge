@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updatedAt": "2026-10-11T14:43:12.977Z",
+  "updatedAt": "2026-10-11T17:41:43.289Z",
   "skills": {
     "inhouse/bridge-completion-verification": {
       "name": "bridge-completion-verification",
@@ -290,9 +290,12 @@
       "description": "Structured brevity review focusing on security invariants, bugs, and performance.",
       "sha256": "f0e79e6a248edcfbbfc8d058e1848acd5f5b1897e201f96fa5cf113e59aaa843",
       "installedAt": "2026-10-11T14:26:48.307Z",
+      "approvalStatus": "approved",
       "files": [
         "SKILL.md"
-      ]
+      ],
+      "approvedBy": "user",
+      "approvedAt": "2026-10-11T17:41:43.284Z"
     },
     "inhouse/patch-only-response": {
       "name": "patch-only-response",
@@ -304,6 +307,7 @@
       "description": "Emits minimal unified diffs strictly conforming to patch grammar.",
       "sha256": "65bd657c9721fb6d01b5fc12238d41d26a9d0b90647a8ffe671dc72088fa1bcc",
       "installedAt": "2026-10-11T14:26:48.321Z",
+      "approvalStatus": "pending-user-approval",
       "files": [
         "SKILL.md"
       ]
@@ -318,6 +322,7 @@
       "description": "Executes targeted research returning citations, key claims, and confidence scores.",
       "sha256": "32e1b7d4bec9e8ab994585a4b9e7adfd4f5787c720e9de8564c0ba453f8285f4",
       "installedAt": "2026-10-11T14:26:48.322Z",
+      "approvalStatus": "pending-user-approval",
       "files": [
         "SKILL.md"
       ]
@@ -332,9 +337,12 @@
       "description": "Pinpoints root failure causes in stack traces and proposes reproduction steps.",
       "sha256": "84b657961729cc1ce523a8449e05b393991b31b49b1008ac5344ae37e72be681",
       "installedAt": "2026-10-11T14:26:48.322Z",
+      "approvalStatus": "approved",
       "files": [
         "SKILL.md"
-      ]
+      ],
+      "approvedBy": "user",
+      "approvedAt": "2026-10-11T17:41:43.289Z"
     },
     "inhouse/tamper-test-skill": {
       "name": "tamper-test-skill",
@@ -345,7 +353,7 @@
       "riskTier": "A",
       "description": "Temporary skill to test tampering detection.",
       "sha256": "53c77605e741f4dccf07d551faf25ba2952f88ddee27ef572ab31a4ed2d0e836",
-      "installedAt": "2026-10-11T14:43:12.977Z",
+      "installedAt": "2026-10-11T17:41:43.288Z",
       "files": [
         "SKILL.md"
       ],

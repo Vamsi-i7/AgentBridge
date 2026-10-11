@@ -1,18 +1,12 @@
 import crypto from 'node:crypto';
 import { LifecycleStage } from '../diagnostics/request-tracer.js';
+import { CollaborationGuard } from '../collaboration/collaboration-guard.js';
+import { RollingSummaryManager } from '../collaboration/rolling-summary.js';
+import { ContextReferenceManager } from '../collaboration/context-reference-manager.js';
+import { PromptCompressor } from '../compression/prompt-compressor.js';
 
-/**
- * Multi-Hop Router & Parallel Fan-Out/Fan-In Coordinator (Mission E)
- *
- * Capabilities:
- * 1. Return-target hop-to-hop forwarding: forwards directly without waking intermediate agents to relay.
- * 2. Fan-out / fan-in: executes N child tasks in parallel and wakes the parent once with all joined results.
- * 3. Cancel propagation: cancelling a parent task propagates cancellation to all active child tasks.
- * 4. Hop/turn limits: strict loop prevention with maxHops ceiling.
- * 5. Correlated tracing: maintains parentRequestId, child attemptIds, and monotonic epochs across hops.
- */
 export class MultiHopRouter {
-  constructor({ mailboxHub, taskManager, eventBus, tracer = null, permissionGuard = null, guard = null }) {
+  constructor({ mailboxHub, taskManager, eventBus, tracer = null, permissionGuard = null, guard = null, enableCompression = false } = {}) {
     this.mailbox = mailboxHub;
     this.taskManager = taskManager;
     this.eventBus = eventBus;
@@ -20,6 +14,10 @@ export class MultiHopRouter {
     this.guard = permissionGuard || guard || mailboxHub?.guard || null;
     this.maxHops = 10;
     this.childTasksByParent = new Map(); // parentTaskId -> Set<childTaskId>
+    this.collabGuard = new CollaborationGuard({ maxHops: this.maxHops });
+    this.rollingSummary = new RollingSummaryManager();
+    this.contextRefManager = new ContextReferenceManager();
+    this.compressor = new PromptCompressor({ enabled: Boolean(enableCompression) });
   }
 
   /**
@@ -74,6 +72,14 @@ export class MultiHopRouter {
         }
       }
 
+      // Collaboration guard loop and budget check
+      const guardCheck = this.collabGuard.checkHop(pReqId, previousAgent, currentAgent, currentPayload);
+      if (!guardCheck.allowed) {
+        const guardErr = new Error(`COLLABORATION_GUARD_STOP: ${guardCheck.reason}`);
+        guardErr.code = guardCheck.reason;
+        throw guardErr;
+      }
+
       this.tracer?.mark?.({
         requestId: pReqId,
         stage: LifecycleStage.ACCEPTED,
@@ -90,10 +96,16 @@ export class MultiHopRouter {
       });
 
       // Dispatch directly to target agent's mailbox / handler
+      let hopPayload = currentPayload;
+      if (this.compressor.enabled && typeof hopPayload === 'string') {
+        const comp = this.compressor.compress(hopPayload);
+        hopPayload = comp.compressedText;
+      }
+
       const hopResult = await this.mailbox.askAgent({
         fromAgent: previousAgent,
         toAgent: currentAgent,
-        question: currentPayload,
+        question: hopPayload,
         requestId: hopReqId,
         attemptId: hopAttemptId,
         epoch: hopEpoch,
@@ -109,6 +121,15 @@ export class MultiHopRouter {
         failureErr.hopTrace = hopTrace;
         throw failureErr;
       }
+
+      // Update rolling collaboration summary
+      this.rollingSummary.appendTurn(pReqId, {
+        hop: i,
+        fromAgent: previousAgent,
+        toAgent: currentAgent,
+        input: currentPayload,
+        output: hopResult.response
+      });
 
       currentPayload = hopResult.response || hopResult.result;
       hopTrace.push({

@@ -14,6 +14,17 @@ export class PersistentSwiftAXBridge extends SwiftAXBridge {
     const child = spawn(this.binaryPath, ['--daemon'], {
       stdio: ['pipe', 'pipe', 'pipe']
     });
+    if (typeof child.unref === 'function') {
+      child.unref();
+    }
+    // `child.unref()` detaches only the PROCESS handle. The three stdio pipes stay
+    // referenced and keep the event loop alive, so any process that starts the
+    // daemon cannot exit on its own, and each such process leaks a running helper.
+    for (const stream of [child.stdin, child.stdout, child.stderr]) {
+      if (stream && typeof stream.unref === 'function') {
+        try { stream.unref(); } catch {}
+      }
+    }
     child.stdout.setEncoding('utf8');
     child.stderr.resume();
     child.on('exit', () => {
@@ -21,6 +32,13 @@ export class PersistentSwiftAXBridge extends SwiftAXBridge {
     });
     this.workerProcess = child;
     return child;
+  }
+
+  close() {
+    if (this.workerProcess && !this.workerProcess.killed) {
+      try { this.workerProcess.kill('SIGTERM'); } catch {}
+      this.workerProcess = null;
+    }
   }
 
   executeOp(opObj) {

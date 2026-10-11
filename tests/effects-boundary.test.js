@@ -24,6 +24,7 @@ test('Effects Boundary & Invariants Suite: Authoritative ToolRegistry Enforcemen
   const registry = new ToolRegistry();
 
   const baseContext = {
+    agentId: 'freebuff',
     logger,
     db: logger.db,
     taskManager,
@@ -142,7 +143,7 @@ test('Effects Boundary & Invariants Suite: Authoritative ToolRegistry Enforcemen
           agentId: 'zia-brain',
           attemptId: att.attemptId,
           epoch: att.epoch
-        }, baseContext);
+        }, { ...baseContext, agentId: 'zia-brain' });
       },
       /belongs to agent 'freebuff', not 'zia-brain'/
     );

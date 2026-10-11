@@ -39,7 +39,7 @@ test('Step 4c: Headless CLI Process Adapter Suite', async (t) => {
     });
 
     assert.strictEqual(result.outcome, 'DELIVERED_CONFIRMED');
-    assert.strictEqual(result.evidence, CompletionEvidenceTier.NETWORK_END_OF_STREAM);
+    assert.strictEqual(result.evidence, CompletionEvidenceTier.PROCESS_EXIT);
     assert.ok(result.response.includes('CLI Response to:'));
     assert.ok(result.usage.tokensIn > 0);
     assert.ok(result.usage.tokensOut > 0);

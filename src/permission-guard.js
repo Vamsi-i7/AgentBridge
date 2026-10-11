@@ -251,8 +251,7 @@ export class PermissionGuard {
       }
 
       // Check Zia write lock
-      const ziaRoot = path.resolve(this.config.ZIA_ROOT);
-      if (this.config.ZIA_WRITE_LOCKED && (resolved === ziaRoot || resolved.startsWith(ziaRoot + path.sep))) {
+      if (this.config.ZIA_WRITE_LOCKED && this.isZiaPath(resolved)) {
         return {
           allowed: false,
           reason: `Zia main working tree is currently WRITE-LOCKED to protect ongoing Freebuff stabilization work.`
@@ -261,6 +260,30 @@ export class PermissionGuard {
     }
 
     return { allowed: true, path: realResolved };
+  }
+
+  /**
+   * Determine if a target path or its real destination falls within ZIA_ROOT.
+   */
+  isZiaPath(targetPath) {
+    if (!targetPath) return false;
+    const ziaRoot = path.resolve(this.config.ZIA_ROOT || '/Users/jayanthpranaykonada/Zia');
+    let realZiaRoot = ziaRoot;
+    try {
+      realZiaRoot = fs.realpathSync(ziaRoot);
+    } catch {}
+
+    const resolved = path.resolve(targetPath);
+    let realResolved = resolved;
+    try {
+      realResolved = this.resolveRealPath(resolved);
+    } catch {}
+
+    const matchesRoot = (p, root) => p === root || p.startsWith(root + path.sep);
+    return matchesRoot(resolved, ziaRoot) ||
+           matchesRoot(resolved, realZiaRoot) ||
+           matchesRoot(realResolved, ziaRoot) ||
+           matchesRoot(realResolved, realZiaRoot);
   }
 
   /**
@@ -350,6 +373,12 @@ export class PermissionGuard {
 
     // 4. Check CWD safety
     if (cwd) {
+      if (this.config.ZIA_WRITE_LOCKED && this.isZiaPath(cwd)) {
+        return {
+          allowed: false,
+          reason: 'Command execution inside Zia working tree is denied while ZIA_WRITE_LOCKED is active.'
+        };
+      }
       const pathCheck = this.validatePathAccess(cwd, 'READ');
       if (!pathCheck.allowed) {
         return { allowed: false, reason: `Command working directory disallowed: ${pathCheck.reason}` };

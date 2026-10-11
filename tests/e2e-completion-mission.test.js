@@ -346,7 +346,7 @@ test('End-to-End Completion Mission Acceptance Suite', async (t) => {
       agentId: 'audit-client'
     });
 
-    const explanation = explainer.explainRequest(req.requestId);
+    const explanation = explainer.explainRequest(req.requestId, 'audit-client');
     assert.strictEqual(explanation.found, true);
     assert.strictEqual(explanation.requestId, req.requestId);
     assert.strictEqual(explanation.currentStatus, 'completed');

@@ -247,7 +247,7 @@ export function calculateTax(subtotal, rate) {
   // 7. Semantic Cache
   // ---------------------------------------------------------------------------
   await t.test('7. SemanticCache caches read-only queries, refuses writes, and invalidates on file change', () => {
-    const cache = new SemanticCache();
+    const cache = new SemanticCache({ enabled: true });
 
     // 7a. Rejects mutation queries
     assert.equal(cache.isCacheable('WRITE', 'write to file.txt'), false);
@@ -273,7 +273,7 @@ export function calculateTax(subtotal, rate) {
   // 8. Cheap-First Router
   // ---------------------------------------------------------------------------
   await t.test('8. CheapFirstRouter routes lightweight tasks to cheap tier and deep reasoning to frontier', () => {
-    const router = new CheapFirstRouter({ cheapAgentId: 'gemini', frontierAgentId: 'claude-desktop' });
+    const router = new CheapFirstRouter({ enabled: true, cheapAgentId: 'gemini', frontierAgentId: 'claude-desktop' });
     const available = ['gemini', 'claude-desktop'];
 
     const relayTask = { type: 'relay', instructions: 'Pass this message to next agent' };

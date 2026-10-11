@@ -494,4 +494,10 @@ export class ChatGptAutonomousSession extends ModelExecutionAdapter {
     }
     return { recovered: true };
   }
+
+  close() {
+    if (this.swiftBridge && typeof this.swiftBridge.close === 'function') {
+      this.swiftBridge.close();
+    }
+  }
 }

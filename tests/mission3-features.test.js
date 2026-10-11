@@ -219,6 +219,7 @@ test('Mission 3: ToolRegistry discover_tools and tool execution', async (t) => {
   const git = new GitController(guard, logger);
 
   const context = {
+    agentId: 'system',
     logger,
     guard,
     controller,

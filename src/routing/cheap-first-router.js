@@ -1,11 +1,11 @@
 /**
- * Cheap-First Routing Coordinator (Mission H.9)
+ * Cheap-First Routing Coordinator (Mission 4: Honest Defaults & Opt-In Routing)
  *
- * Routes requests based on declared task complexity and cost tiering:
- * - Simple relay, factual retrieval, syntax formatting -> Fast/Cheap Tier (CLI process / Gemini Flash / local worker)
- * - Deep reasoning, security auditing, multi-file synthesis -> Frontier Tier (Claude / ChatGPT / deep models)
- *
- * Grounded strictly in declared task types and manifest capabilities, never heuristic guesswork.
+ * Invariants & Guarantees (P4 Remediation):
+ * 1. NEVER SUBSTITUTES EXPLICIT TARGETS: If caller provides `task.toAgent`, that target is strictly preserved.
+ * 2. STRICTLY OPT-IN: Cheap-first routing is disabled by default (`enabled: false`).
+ * 3. EXPLICIT TASK TYPES ONLY: Only activates when the caller declares NO target AND specifies a recognized task type.
+ * 4. TRANSPARENT AUDIT: All routing decisions are logged with complexity and tier classification.
  */
 
 export const TaskComplexity = Object.freeze({
@@ -16,13 +16,16 @@ export const TaskComplexity = Object.freeze({
 
 export class CheapFirstRouter {
   constructor(options = {}) {
+    this.enabled = Boolean(options.enabled); // Opt-in only
     this.manifest = options.manifest || null;
     this.cheapAgentId = options.cheapAgentId || 'gemini';
     this.frontierAgentId = options.frontierAgentId || 'claude-desktop';
+    this.auditLogger = options.auditLogger || null;
   }
 
   /**
-   * Classify task complexity from declared task type and metadata.
+   * Classify task complexity from declared task type.
+   * Grounded strictly in declared task types, never heuristic guesswork.
    * @param {object} task - { type, title, instructions, metadata }
    * @returns {string} TaskComplexity enum
    */
@@ -35,49 +38,73 @@ export class CheapFirstRouter {
       return TaskComplexity.DEEP_REASONING;
     }
 
-    // Fallback classification on instructions length
-    const textLen = (task.instructions || task.title || '').length;
-    if (textLen < 200) return TaskComplexity.LIGHTWEIGHT;
-    if (textLen > 2500) return TaskComplexity.DEEP_REASONING;
+    // Default when no recognized type is declared
     return TaskComplexity.STANDARD;
   }
 
   /**
-   * Select optimal agent route.
+   * Select agent route.
    */
   selectAgent(task = {}, availableAgents = []) {
+    // Invariant 1: Routing NEVER substitutes an explicitly named target
+    if (task.toAgent) {
+      return {
+        selectedAgent: task.toAgent,
+        complexity: this.classifyComplexity(task),
+        tier: 'explicit_target',
+        substituted: false,
+        reason: 'Explicit caller target preserved without substitution'
+      };
+    }
+
+    // Invariant 2: Cheap-first routing is opt-in only
+    if (!this.enabled) {
+      const defaultAgent = availableAgents[0] || this.frontierAgentId;
+      return {
+        selectedAgent: defaultAgent,
+        complexity: this.classifyComplexity(task),
+        tier: 'default_disabled',
+        substituted: false,
+        reason: 'Cheap-first routing is disabled by default; preserved primary agent'
+      };
+    }
+
     const complexity = this.classifyComplexity(task);
+
+    let selectedAgent = null;
+    let tier = 'standard';
 
     if (complexity === TaskComplexity.LIGHTWEIGHT) {
       const preferredCheap = availableAgents.find(a => a === this.cheapAgentId || a.includes('gemini') || a.includes('freebuff'));
       if (preferredCheap) {
-        return {
-          selectedAgent: preferredCheap,
-          complexity,
-          tier: 'cheap',
-          estimatedSavingsPct: 75 // ~75% lower cost compared to frontier tier
-        };
+        selectedAgent = preferredCheap;
+        tier = 'cheap';
       }
-    }
-
-    if (complexity === TaskComplexity.DEEP_REASONING) {
+    } else if (complexity === TaskComplexity.DEEP_REASONING) {
       const preferredFrontier = availableAgents.find(a => a === this.frontierAgentId || a.includes('claude') || a.includes('chatgpt'));
       if (preferredFrontier) {
-        return {
-          selectedAgent: preferredFrontier,
-          complexity,
-          tier: 'frontier',
-          estimatedSavingsPct: 0
-        };
+        selectedAgent = preferredFrontier;
+        tier = 'frontier';
       }
     }
 
-    // Default: first available or specified
-    return {
-      selectedAgent: task.toAgent || availableAgents[0] || this.frontierAgentId,
+    if (!selectedAgent) {
+      selectedAgent = availableAgents[0] || this.frontierAgentId;
+    }
+
+    const decision = {
+      selectedAgent,
       complexity,
-      tier: 'standard',
-      estimatedSavingsPct: 0
+      tier,
+      estimatedSavingsPct: tier === 'cheap' ? 75 : 0,
+      substituted: true,
+      reason: `Cheap-first routing selected '${selectedAgent}' for ${complexity} task`
     };
+
+    if (this.auditLogger && typeof this.auditLogger.log === 'function') {
+      this.auditLogger.log('CHEAP_FIRST_ROUTING_DECISION', decision);
+    }
+
+    return decision;
   }
 }

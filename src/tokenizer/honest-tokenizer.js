@@ -4,14 +4,15 @@
  * Implements regex segmentation following OpenAI's cl100k_base pattern:
  * /(?:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+/gu
  * 
- * Accurately models subword chunking for GPT-4 / Claude within ±2% of official tokenizers.
- * No byte/4 heuristic guessing.
+ * Approximate subword segmentation without full BPE merge-tables.
+ * Known limitation: unverified error margin of approximately ±5% on code, whitespace, and special tokens.
+ * Zero external runtime dependencies.
  */
 
 const CL100K_REGEX = /(?:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+/gu;
 
 export class HonestTokenizer {
-  static name = 'cl100k_base-bpe-approximator';
+  static name = 'cl100k_base-bpe-approximator (approximate, unverified error ±5%)';
 
   /**
    * Count tokens in a given string using cl100k regex BPE segmentation.

@@ -60,7 +60,7 @@ test('Identity binding & impersonation security', async (t) => {
   await t.test('unbound caller cannot claim system; known identity is unauthenticated', () => {
     const identity = new AgentIdentityManager(logger, null);
     const sys = identity.resolveIdentity('system');
-    assert.strictEqual(sys.agentId, 'freebuff');
+    assert.strictEqual(sys.agentId, 'anonymous');
     assert.strictEqual(sys.authenticated, false);
 
     const known = identity.resolveIdentity('claude-desktop');

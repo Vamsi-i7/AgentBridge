@@ -40,7 +40,7 @@ export class BridgeMcpServer {
       detectedAgent = 'gemini';
     }
     this.options = options;
-    this.agentId = options.agentId || process.env.AGENT_ID || detectedAgent || 'freebuff';
+    this.agentId = options.agentId || process.env.AGENT_ID || detectedAgent || 'anonymous';
     this.startedAt = new Date().toISOString();
     this.instanceId = `bridge_${process.pid}_${Date.now()}`;
 
@@ -246,6 +246,21 @@ export class BridgeMcpServer {
       try {
         this.httpServer.broadcastToolListChanged();
       } catch {}
+    }
+  }
+
+  async close() {
+    if (this.presenceSession && typeof this.presenceSession.stop === 'function') {
+      try { this.presenceSession.stop(); } catch {}
+    }
+    if (this.sessionAdapter && typeof this.sessionAdapter.close === 'function') {
+      try { await this.sessionAdapter.close(); } catch {}
+    }
+    if (this.eventBus && typeof this.eventBus.close === 'function') {
+      try { this.eventBus.close(); } catch {}
+    }
+    if (this.logger && typeof this.logger.close === 'function') {
+      try { this.logger.close(); } catch {}
     }
   }
 }

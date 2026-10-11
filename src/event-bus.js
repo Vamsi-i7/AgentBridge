@@ -31,6 +31,7 @@ export class EventBus extends EventEmitter {
     // resolve from the same authoritative durable row; previously a second
     // registration overwrote the first, silently orphaning it until timeout.
     this.responseWaiters = new Map();
+    this.waiters = this.responseWaiters;
 
     this.fileWatcher = null;
     this.fallbackTimer = null;
@@ -143,7 +144,7 @@ export class EventBus extends EventEmitter {
    */
   publish({
     type,
-    agentId, // recipient agent, or '*' for broadcast
+    agentId = '*', // recipient agent, or '*' for broadcast
     fromAgent = 'system',
     conversationId = null,
     requestId = null,
@@ -201,14 +202,14 @@ export class EventBus extends EventEmitter {
       insertInfo = stmt.run(
         timestamp,
         type,
-        agentId,
-        fromAgent,
-        convId,
-        requestId,
-        taskId,
-        status,
-        payloadStr,
-        dedupKey
+        agentId ?? '*',
+        fromAgent ?? 'system',
+        convId ?? null,
+        requestId ?? null,
+        taskId ?? null,
+        status ?? 'pending',
+        payloadStr ?? null,
+        dedupKey ?? null
       );
     } catch (err) {
       if (dedupKey && (err.message?.includes('UNIQUE constraint failed') || err.code === 'SQLITE_CONSTRAINT_UNIQUE')) {
@@ -262,6 +263,52 @@ export class EventBus extends EventEmitter {
     this.dispatchLocal(event);
 
     return event;
+  }
+
+  publishResponse(requestId, { status = 'completed', response = null, error = null, conversationId = 'conv_default', fromAgent = 'system', toAgent = 'system', question = 'question', agentId = '*' } = {}) {
+    try {
+      const now = new Date().toISOString();
+      const resStr = typeof response === 'string' ? response : JSON.stringify(response);
+      this.db.prepare(`
+        INSERT INTO bridge_requests (request_id, conversation_id, from_agent, to_agent, question, status, response, error, created_at, updated_at, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(request_id) DO UPDATE SET
+          status = excluded.status,
+          response = excluded.response,
+          error = excluded.error,
+          completed_at = excluded.completed_at,
+          updated_at = excluded.updated_at
+      `).run(requestId, conversationId, fromAgent, toAgent, question, status, resStr, error, now, now, now);
+    } catch {}
+    return this.publish({
+      type: status === 'completed' ? 'response_ready' : 'response_failed',
+      agentId,
+      requestId,
+      status,
+      payload: { response, error }
+    });
+  }
+
+  publishCancel(requestId, { reason = 'cancelled', conversationId = 'conv_default', fromAgent = 'system', toAgent = 'system', question = 'question', agentId = '*' } = {}) {
+    try {
+      const now = new Date().toISOString();
+      this.db.prepare(`
+        INSERT INTO bridge_requests (request_id, conversation_id, from_agent, to_agent, question, status, error, created_at, updated_at, completed_at)
+        VALUES (?, ?, ?, ?, ?, 'cancelled', ?, ?, ?, ?)
+        ON CONFLICT(request_id) DO UPDATE SET
+          status = 'cancelled',
+          error = excluded.error,
+          completed_at = excluded.completed_at,
+          updated_at = excluded.updated_at
+      `).run(requestId, conversationId, fromAgent, toAgent, question, reason, now, now, now);
+    } catch {}
+    return this.publish({
+      type: 'request_cancelled',
+      agentId,
+      requestId,
+      status: 'cancelled',
+      payload: { reason }
+    });
   }
 
   dispatchLocal(event) {

@@ -33,16 +33,27 @@ export class RequestExplainer {
       };
     }
 
-    if (caller) {
-      const isPrivileged = typeof caller === 'object' && caller.isPrivileged === true;
-      const callerId = typeof caller === 'string' ? caller : caller.agentId;
-      if (!isPrivileged && callerId) {
-        const normCaller = callerId.trim().toLowerCase();
-        const normFrom = (requestRow.from_agent || '').trim().toLowerCase();
-        const normTo = (requestRow.to_agent || '').trim().toLowerCase();
-        if (normCaller !== normFrom && normCaller !== normTo) {
-          throw new Error(`Unauthorized: Agent '${callerId}' is not authorized to explain request '${requestId}'.`);
-        }
+    if (!caller) {
+      const err = new Error(`Unauthorized: caller identity required to explain request '${requestId}'.`);
+      err.code = 'UNAUTHORIZED_EXPLAIN_ACCESS';
+      throw err;
+    }
+
+    const isPrivileged = typeof caller === 'object' && caller.isPrivileged === true;
+    const callerId = typeof caller === 'string' ? caller : caller.agentId;
+    if (!isPrivileged) {
+      if (!callerId || callerId === 'anonymous') {
+        const err = new Error(`Unauthorized: unauthenticated caller cannot explain request '${requestId}'.`);
+        err.code = 'UNAUTHORIZED_EXPLAIN_ACCESS';
+        throw err;
+      }
+      const normCaller = callerId.trim().toLowerCase();
+      const normFrom = (requestRow.from_agent || '').trim().toLowerCase();
+      const normTo = (requestRow.to_agent || '').trim().toLowerCase();
+      if (normCaller !== normFrom && normCaller !== normTo) {
+        const err = new Error(`Unauthorized: Agent '${callerId}' is not authorized to explain request '${requestId}'.`);
+        err.code = 'UNAUTHORIZED_EXPLAIN_ACCESS';
+        throw err;
       }
     }
 

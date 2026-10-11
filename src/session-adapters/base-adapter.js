@@ -50,6 +50,7 @@ export class AgentSessionAdapter {
       headlessExecution: false,
       externalModelWakeup: false,
       idleWakeupSupported: false,
+      autonomousModelWake: 'unsupported; interactive client only',
       activeTurnRpc: true,
       desktopNotificationSupported: false,
       mcpStdio: true,

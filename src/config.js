@@ -18,15 +18,25 @@ export const CONFIG = {
   // Registered non-sensitive verification tokens for Agent Bridge interoperability tests
   VERIFICATION_TOKENS: REGISTERED_VERIFICATION_TOKENS,
   
-  // Agent Bridge is explicitly authorized by the owner to mutate the
-  // entire user home directory. macOS/TCC/UNIX permissions still apply.
-  ZIA_WRITE_LOCKED: false,
+  // Zia main working tree write-lock protection (defaults to TRUE to protect Zia from any mutation)
+  ZIA_WRITE_LOCKED: process.env.ZIA_WRITE_LOCKED !== undefined
+    ? process.env.ZIA_WRITE_LOCKED !== 'false' && process.env.ZIA_WRITE_LOCKED !== '0'
+    : true,
 
-  // All paths under the user's home directory are in scope.
-  ALLOWED_ROOTS: [
-    path.join(BRIDGE_ROOT, 'test-workspace'),
-    '/Users/jayanthpranaykonada'
-  ],
+  // Default narrowed roots: only agent-bridge root, handoff folder, and configured scratch/temp directories.
+  // Full home directory access is disabled by default to prevent unintended mutations.
+  // Documented opt-in to widen: set AGENT_BRIDGE_ALLOW_HOME_ROOT=1 or AGENT_BRIDGE_ALLOWED_ROOTS=<comma-separated paths>.
+  ALLOWED_ROOTS: process.env.AGENT_BRIDGE_ALLOW_HOME_ROOT === '1'
+    ? [path.join(BRIDGE_ROOT, 'test-workspace'), '/Users/jayanthpranaykonada']
+    : (process.env.AGENT_BRIDGE_ALLOWED_ROOTS
+      ? process.env.AGENT_BRIDGE_ALLOWED_ROOTS.split(',').map(s => s.trim()).filter(Boolean)
+      : [
+          BRIDGE_ROOT,
+          path.join(BRIDGE_ROOT, 'test-workspace'),
+          '/Users/jayanthpranaykonada/agent-bridge-handoff',
+          path.join(BRIDGE_ROOT, '.scratch'),
+          path.join('/Users/jayanthpranaykonada/agent-bridge-handoff', '.scratch')
+        ]),
 
   // No Agent-Bridge-level filename denylist for mutation. OS-level protections remain authoritative.
   PROTECTED_FILES: [],

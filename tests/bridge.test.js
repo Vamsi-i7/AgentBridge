@@ -50,12 +50,18 @@ test('Agent Bridge Test Suite', async (t) => {
     // Protected-file denylist is intentionally empty for owner-authorized full access.
     assert.strictEqual(guard.validatePathAccess(path.join(TEST_WORKSPACE, 'DeterministicRouter.swift'), 'WRITE').allowed, true);
 
-    // Zia is writable; file activity is advisory rather than restrictive.
+    // Zia write protection under ZIA_WRITE_LOCKED
     const ziaFile = path.join(CONFIG.ZIA_ROOT, 'test.swift');
-    assert.strictEqual(guard.validatePathAccess(ziaFile, 'WRITE').allowed, true);
+    if (CONFIG.ZIA_WRITE_LOCKED) {
+      assert.strictEqual(guard.validatePathAccess(ziaFile, 'WRITE').allowed, false);
+    } else {
+      assert.strictEqual(guard.validatePathAccess(ziaFile, 'WRITE').allowed, true);
+    }
 
-    // Zia read -> ALLOWED
-    assert.strictEqual(guard.validatePathAccess(path.join(CONFIG.ZIA_ROOT, 'Package.swift'), 'READ').allowed, true);
+    // Zia read respects ALLOWED_ROOTS (outside default allowed roots)
+    const ziaRead = guard.validatePathAccess(path.join(CONFIG.ZIA_ROOT, 'Package.swift'), 'READ');
+    const ziaInRoots = guard.realAllowedRoots.some(r => path.resolve(CONFIG.ZIA_ROOT).startsWith(r));
+    assert.strictEqual(ziaRead.allowed, ziaInRoots);
   });
 
   await t.test('3. Command Safety & Whitelist Guard', () => {
@@ -104,11 +110,18 @@ test('Agent Bridge Test Suite', async (t) => {
     assert.strictEqual(cmdRes.exitCode, 0);
     assert.strictEqual(cmdRes.stdout, 'Bridge command success');
 
-    // F. Zia write is permitted by the current owner-authorized policy.
+    // F. Zia write behavior under ZIA_WRITE_LOCKED
     const ziaProbe = path.join(CONFIG.ZIA_ROOT, '.bridge_test_zia.txt');
-    const ziaWrite = await controller.createFile(ziaProbe, 'claude-desktop', 'allowed', false);
-    assert.strictEqual(ziaWrite.status, 'created');
-    fs.unlinkSync(ziaProbe);
+    if (CONFIG.ZIA_WRITE_LOCKED) {
+      await assert.rejects(
+        () => controller.createFile(ziaProbe, 'claude-desktop', 'denied', false),
+        /outside allowed roots|denied|locked/i
+      );
+    } else {
+      const ziaWrite = await controller.createFile(ziaProbe, 'claude-desktop', 'allowed', false);
+      assert.strictEqual(ziaWrite.status, 'created');
+      if (fs.existsSync(ziaProbe)) fs.unlinkSync(ziaProbe);
+    }
   });
 
   await t.test('5. Inter-Agent Communication & Task Delegation', () => {

@@ -22,16 +22,18 @@ test('Plugin path: agent-bridge-test MCP server actually works', async (t) => {
   // The configured server entrypoint must exist.
   const entryArg = entry.args.find(a => a.endsWith('mcp-server.js'));
   assert.ok(entryArg, 'plugin must launch mcp-server.js');
-  assert.ok(fs.existsSync(entryArg), `plugin entrypoint missing: ${entryArg}`);
+  const resolvedEntry = path.isAbsolute(entryArg) ? entryArg : path.resolve(path.dirname(MCP_JSON), entryArg);
+  assert.ok(fs.existsSync(resolvedEntry), `plugin entrypoint missing: ${resolvedEntry}`);
 
-  // Prefer the plugin's declared runtime; fall back to the current one.
-  const command = fs.existsSync(entry.command) ? entry.command : process.execPath;
-
+  // The shipped .mcp.json hardcodes absolute, machine-specific paths (see F-005).
+  // Executing it would launch whatever checkout those paths name -- not the code
+  // under test -- so run the server from THIS checkout instead and assert the
+  // shipped JSON separately, as data.
   const client = new Client({ name: 'plugin-path-test', version: '1.0.0' }, { capabilities: {} });
   const transport = new StdioClientTransport({
-    command,
-    args: entry.args,
-    cwd: entry.cwd || REPO,
+    command: process.execPath,
+    args: [path.join(REPO, 'src', 'mcp-server.js')],
+    cwd: REPO,
     env: { ...process.env },
     stderr: 'pipe'
   });

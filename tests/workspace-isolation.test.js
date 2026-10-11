@@ -53,6 +53,7 @@ test('Workspace Isolation & Worktree Invariants Suite', async (t) => {
   });
 
   const baseContext = {
+    agentId: 'freebuff',
     logger,
     db: logger.db,
     taskManager,

@@ -39,6 +39,8 @@ test('Mission G: Signed, Lazy-Loaded, Default-Deny Skill Registry Suite [TEST-PR
 
   // 3. Lazy loading and hash cache deduplication
   await t.test('3. Lazy loading serves body on turn 1 and 0-token CACHED_UNMODIFIED on turn 2', () => {
+    // Approve skill first per human approval security requirement
+    registry.approveInstalledSkill('concise-review', { isHumanApproved: true, approvedBy: 'user' });
     // Turn 1: load body
     const turn1 = registry.loadSkill('concise-review', {
       agentId: 'reviewer-agent',
@@ -125,6 +127,8 @@ Initial content.
 
   // 6. Permission intersection: never exceeds agent's permissions
   await t.test('6. Skill permissions are intersected with agent permissions (never widened)', () => {
+    // Approve skill first per human approval security requirement
+    registry.approveInstalledSkill('test-failure-triage', { isHumanApproved: true, approvedBy: 'user' });
     // test-failure-triage declares ["read:files", "execute:tests"]
     // Agent only has ["read:files"]
     const loadResult = registry.loadSkill('test-failure-triage', {
