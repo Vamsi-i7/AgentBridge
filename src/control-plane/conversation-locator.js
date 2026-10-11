@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { getScrubbedEnv } from '../utils/scrubbed-env.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -92,7 +93,7 @@ export class ConversationLocator {
     `;
 
     try {
-      const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], { timeout: 4000 });
+      const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], { timeout: 4000, env: getScrubbedEnv() });
       const res = JSON.parse(stdout.trim());
       if (!res.found) {
         return {

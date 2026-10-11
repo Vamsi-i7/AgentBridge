@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { getScrubbedEnv } from '../utils/scrubbed-env.js';
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -39,7 +40,7 @@ export class SwiftAXBridge {
 
     const timeoutMs = (opObj.timeoutMs || 60000) + 30000;
     try {
-      const { stdout } = await execFileAsync(this.binaryPath, [JSON.stringify(opObj)], { timeout: timeoutMs });
+      const { stdout } = await execFileAsync(this.binaryPath, [JSON.stringify(opObj)], { timeout: timeoutMs, env: getScrubbedEnv() });
       return JSON.parse(stdout.trim());
     } catch (err) {
       return { ok: false, error: err.message };

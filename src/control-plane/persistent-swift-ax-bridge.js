@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { SwiftAXBridge } from './swift-ax-bridge.js';
+import { getScrubbedEnv } from '../utils/scrubbed-env.js';
 
 export class PersistentSwiftAXBridge extends SwiftAXBridge {
   constructor(options = {}) {
@@ -12,7 +13,8 @@ export class PersistentSwiftAXBridge extends SwiftAXBridge {
   ensureWorker() {
     if (this.workerProcess && !this.workerProcess.killed) return this.workerProcess;
     const child = spawn(this.binaryPath, ['--daemon'], {
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: getScrubbedEnv()
     });
     if (typeof child.unref === 'function') {
       child.unref();

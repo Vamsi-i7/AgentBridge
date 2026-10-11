@@ -6,6 +6,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { execSync } from 'node:child_process';
+import { getScrubbedEnv } from './utils/scrubbed-env.js';
 import { CONFIG } from './config.js';
 import { AuditLogger } from './audit-logger.js';
 import { PermissionGuard } from './permission-guard.js';
@@ -84,7 +85,7 @@ export class BridgeMcpServer {
     // Startup stamp for observability, version tracking, and staleness detection
     let gitHead = 'unknown';
     try {
-      gitHead = execSync('git rev-parse HEAD', { cwd: CONFIG.BRIDGE_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      gitHead = execSync('git rev-parse HEAD', { cwd: CONFIG.BRIDGE_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: getScrubbedEnv() }).trim();
     } catch {}
     this.diagnostics.setStartupStamp({
       gitHead,

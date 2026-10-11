@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { activateDesktopApp } from '../session-adapters/desktop-notifier.js';
 import { ConversationLocator } from './conversation-locator.js';
+import { getScrubbedEnv } from '../utils/scrubbed-env.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -139,7 +140,7 @@ export class AXEngine {
     `;
 
     try {
-      const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], { timeout: 6000 });
+      const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], { timeout: 6000, env: getScrubbedEnv() });
       return JSON.parse(stdout.trim());
     } catch (err) {
       return { running: false, error: err.message };
@@ -370,7 +371,7 @@ export class AXEngine {
     `;
 
     try {
-      const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', submissionScript], { timeout: 6000 });
+      const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', submissionScript], { timeout: 6000, env: getScrubbedEnv() });
       return JSON.parse(stdout.trim());
     } catch (err) {
       return { ok: false, error: err.message };

@@ -79,6 +79,117 @@ export const TOOL_EFFECT_CLASSIFICATIONS = Object.freeze({
   bridge_store_knowledge: EffectClassification.IDEMPOTENT
 });
 
+export const ToolSecurityCategory = Object.freeze({
+  PURE_LOCAL: 'pure_local',                 // Read-only, unprivileged, local or public information
+  WORKSPACE_READ: 'workspace_read',         // Reads workspace filesystem or git history
+  WORKSPACE_MUTATING: 'workspace_mutating', // Modifies workspace files or git state
+  SYSTEM_EXECUTING: 'system_executing',     // Shell command execution
+  STATEFUL_MESSAGING: 'stateful_messaging', // Mutates tasks, messages, collaborations, or delivery
+  CROSS_AGENT_DATA: 'cross_agent_data'      // Accesses private inter-agent requests, responses, inboxes, events, audit
+});
+
+export const TOOL_SECURITY_CLASSIFICATIONS = Object.freeze({
+  // PURE_LOCAL (12 tools)
+  bridge_ping: ToolSecurityCategory.PURE_LOCAL,
+  bridge_discover_agents: ToolSecurityCategory.PURE_LOCAL,
+  bridge_agent_presence: ToolSecurityCategory.PURE_LOCAL,
+  bridge_diagnostics: ToolSecurityCategory.PURE_LOCAL,
+  bridge_context: ToolSecurityCategory.PURE_LOCAL,
+  bridge_discover_tools: ToolSecurityCategory.PURE_LOCAL,
+  bridge_tool_info: ToolSecurityCategory.PURE_LOCAL,
+  bridge_search_knowledge: ToolSecurityCategory.PURE_LOCAL,
+  bridge_get_knowledge: ToolSecurityCategory.PURE_LOCAL,
+  bridge_get_adapter_capabilities: ToolSecurityCategory.PURE_LOCAL,
+  bridge_get_file_activity: ToolSecurityCategory.PURE_LOCAL,
+  bridge_get_all_file_activity: ToolSecurityCategory.PURE_LOCAL,
+
+  // WORKSPACE_READ (17 tools)
+  bridge_read_file: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_batch_read: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_batch_stat: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_search_files: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_find_symbol: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_read_symbol: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_inspect_project: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_project_snapshot: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_check_syntax: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_extract_data: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_test_plan: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_git_status: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_git_branches: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_git_log: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_git_diff: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_git_summary: ToolSecurityCategory.WORKSPACE_READ,
+  bridge_git_blame: ToolSecurityCategory.WORKSPACE_READ,
+
+  // WORKSPACE_MUTATING (16 tools)
+  bridge_create_file: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_edit_file: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_delete_file: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_apply_patch: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_batch_write: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_git_stage: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_git_commit: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_git_create_branch: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_git_switch_branch: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_git_delete_branch: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_git_push: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_git_pull: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_git_fetch: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_artifact_store: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_artifact_cleanup: ToolSecurityCategory.WORKSPACE_MUTATING,
+  bridge_store_knowledge: ToolSecurityCategory.WORKSPACE_MUTATING,
+
+  // SYSTEM_EXECUTING (1 tool)
+  bridge_execute_command: ToolSecurityCategory.SYSTEM_EXECUTING,
+
+  // STATEFUL_MESSAGING (17 tools)
+  bridge_ask_agent: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_send_message: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_broadcast_message: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_delegate_task: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_claim_task: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_submit_task_result: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_answer_request: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_request_review: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_create_collaboration: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_join_collaboration: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_leave_collaboration: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_heartbeat_collaboration: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_post_collaboration_event: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_close_collaboration: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_file_activity_start: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_file_activity_heartbeat: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_file_activity_stop: ToolSecurityCategory.STATEFUL_MESSAGING,
+
+  // CROSS_AGENT_DATA (11 tools)
+  bridge_check_inbox: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_get_response: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_get_request_status: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_get_task_status: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_get_pending_requests: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_get_events: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_get_audit_log: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_artifact_get: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_artifact_read: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_get_collaboration: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_list_collaborations: ToolSecurityCategory.CROSS_AGENT_DATA,
+
+  // Dynamic / unlisted tools (mapped for complete security coverage)
+  bridge_acknowledge_delivery: ToolSecurityCategory.STATEFUL_MESSAGING,
+  bridge_explain_request: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_request_ledger: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_wait_for_response: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_slice_fetch: ToolSecurityCategory.CROSS_AGENT_DATA,
+  bridge_get_protocol_snippet: ToolSecurityCategory.PURE_LOCAL,
+  bridge_list_skills: ToolSecurityCategory.PURE_LOCAL,
+  bridge_skill_load: ToolSecurityCategory.PURE_LOCAL
+});
+
+export function getToolSecurityCategory(toolName) {
+  return (toolName && TOOL_SECURITY_CLASSIFICATIONS[toolName]) || ToolSecurityCategory.PURE_LOCAL;
+}
+
 export function isEffectfulTool(toolName) {
   return Boolean(toolName && TOOL_EFFECT_CLASSIFICATIONS[toolName] && TOOL_EFFECT_CLASSIFICATIONS[toolName] !== EffectClassification.PURE);
 }

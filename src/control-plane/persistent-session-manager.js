@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SwiftAXBridge } from './swift-ax-bridge.js';
 import { ConversationLocator } from './conversation-locator.js';
+import { getScrubbedEnv } from '../utils/scrubbed-env.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -76,7 +77,7 @@ export class PersistentDesktopSessionManager {
     }
 
     try {
-      await execFileAsync('open', ['-a', targetApp]);
+      await execFileAsync('open', ['-a', targetApp], { env: getScrubbedEnv() });
       await new Promise(r => setTimeout(r, 1200));
       const verify = await this.swiftBridge.inspectApp(targetApp);
       return { ok: verify.running, running: verify.running, pid: verify.pid };
@@ -99,7 +100,7 @@ export class PersistentDesktopSessionManager {
     // Try native unhide & reopen
     await this.swiftBridge.unhideApp(targetApp);
     try {
-      await execFileAsync('open', ['-a', targetApp]);
+      await execFileAsync('open', ['-a', targetApp], { env: getScrubbedEnv() });
       await new Promise(r => setTimeout(r, 800));
     } catch {}
 

@@ -160,6 +160,11 @@ export const CONFIG = {
   // Autonomous Git settings
   GIT_PROTECTED_BRANCHES: ['main', 'master', 'production', 'release'],
   ALLOW_AUTONOMOUS_PROTECTED_PUSH: false,
+  // Git mutation allowlist: default-deny for all agent identities.
+  // Must be explicitly configured by a human (e.g. via AGENT_BRIDGE_GIT_ALLOWED_AGENTS).
+  GIT_MUTATION_ALLOWED_AGENTS: process.env.AGENT_BRIDGE_GIT_ALLOWED_AGENTS
+    ? process.env.AGENT_BRIDGE_GIT_ALLOWED_AGENTS.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+    : [],
 
   // Sideways / Desktop UI Automation & Control Plane config
   DESKTOP_AUTOMATION: {

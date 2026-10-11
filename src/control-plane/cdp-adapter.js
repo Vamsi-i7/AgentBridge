@@ -2,6 +2,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DesktopControlAdapter, AdapterHealth } from './desktop-control-adapter.js';
+import { getScrubbedEnv } from '../utils/scrubbed-env.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -26,7 +27,7 @@ export class CdpDesktopAdapter extends DesktopControlAdapter {
    */
   async discoverPort() {
     try {
-      const { stdout } = await execFileAsync('ps', ['-ef']);
+      const { stdout } = await execFileAsync('ps', ['-ef'], { env: getScrubbedEnv() });
       const lines = stdout.split('\n');
       for (const line of lines) {
         if (line.includes(this.targetApp) || line.includes('Claude')) {
@@ -47,7 +48,7 @@ export class CdpDesktopAdapter extends DesktopControlAdapter {
     const candidates = Array.from(new Set([this.port, 9222, 9223, 9224, 9225]));
     for (const p of candidates) {
       try {
-        const { stdout } = await execFileAsync('lsof', ['-i', `:${p}`, '-sTCP:LISTEN']);
+        const { stdout } = await execFileAsync('lsof', ['-i', `:${p}`, '-sTCP:LISTEN'], { env: getScrubbedEnv() });
         if (stdout.toLowerCase().includes(this.targetApp.toLowerCase()) || stdout.includes('Electron') || stdout.includes('Claude')) {
           this.port = p;
           return { discovered: true, port: p, source: 'lsof_scan' };
@@ -65,7 +66,7 @@ export class CdpDesktopAdapter extends DesktopControlAdapter {
     await this.discoverPort();
     try {
       // lsof -i :<port> -sTCP:LISTEN
-      const { stdout } = await execFileAsync('lsof', ['-i', `:${this.port}`, '-sTCP:LISTEN']);
+      const { stdout } = await execFileAsync('lsof', ['-i', `:${this.port}`, '-sTCP:LISTEN'], { env: getScrubbedEnv() });
       const lines = stdout.split('\n').filter(Boolean);
       if (lines.length <= 1) return { verified: false, reason: 'PORT_NOT_LISTENING' };
 
@@ -119,7 +120,7 @@ export class CdpDesktopAdapter extends DesktopControlAdapter {
 
   async isRunning() {
     try {
-      const { stdout } = await execFileAsync('pgrep', ['-i', '-f', this.targetApp]);
+      const { stdout } = await execFileAsync('pgrep', ['-i', '-f', this.targetApp], { env: getScrubbedEnv() });
       return stdout.trim().length > 0;
     } catch {
       return false;

@@ -60,29 +60,32 @@ test('Artifact tools derive caller identity from the trusted context (no agentId
     );
   });
 
-  await t.test('3. Agent B storing while claiming to be A is attributed to B, not A', async () => {
-    const bRef = await registry.executeTool('bridge_artifact_store', {
-      agentId: 'gemini',
-      dataBase64: pngFixture('agent-b-forgery').toString('base64'),
-      mimeType: 'image/png'
-    }, ctxB);
-    assert.equal(bRef.agent_id, 'chatgpt-desktop', 'forged agentId must not change the owner');
-
-    // ...and the real A still cannot read B's artifact by claiming otherwise.
+  await t.test('3. Agent B storing while claiming to be A is rejected outright (strict impersonation block)', async () => {
+    // Stage 1.1 hardening: the bridge now THROWS on any agentId mismatch rather
+    // than silently redirecting to the bound identity. This is strictly stronger:
+    // the forgery attempt is rejected before any write occurs.
     await assert.rejects(
-      registry.executeTool('bridge_artifact_read', { agentId: 'chatgpt-desktop', artifactId: bRef.artifact_id }, ctxA),
-      /not authorized|Unauthorized/i
+      registry.executeTool('bridge_artifact_store', {
+        agentId: 'gemini',
+        dataBase64: pngFixture('agent-b-forgery').toString('base64'),
+        mimeType: 'image/png'
+      }, ctxB),
+      /Unauthorized.*impersonate|Unauthorized.*act as/i
     );
   });
 
-  await t.test('4. Agent B cannot self-grant access to A artifact through authorizedAgents', async () => {
-    // There is no update path; a forged store call creates a NEW artifact owned by B.
-    await registry.executeTool('bridge_artifact_store', {
-      agentId: 'gemini',
-      dataBase64: pngFixture('grant-attempt').toString('base64'),
-      mimeType: 'image/png',
-      authorizedAgents: ['chatgpt-desktop']
-    }, ctxB);
+  await t.test('4. Agent B cannot self-grant access to A artifact through authorizedAgents (store attempt rejected)', async () => {
+    // Stage 1.1 hardening: bridge_artifact_store now rejects mismatched agentId;
+    // there is no longer any path for Agent B to write with Agent A's identity.
+    await assert.rejects(
+      registry.executeTool('bridge_artifact_store', {
+        agentId: 'gemini',
+        dataBase64: pngFixture('grant-attempt').toString('base64'),
+        mimeType: 'image/png',
+        authorizedAgents: ['chatgpt-desktop']
+      }, ctxB),
+      /Unauthorized.*impersonate|Unauthorized.*act as/i
+    );
 
     // A's original artifact authorization list is unchanged.
     const rowA = logger.db.prepare('SELECT authorized_agents FROM bridge_artifacts WHERE artifact_id = ?').get(ref.artifact_id);

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import { getScrubbedEnv } from '../utils/scrubbed-env.js';
 
 const DEFAULT_CODEX_PATH =
   '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
@@ -136,7 +137,7 @@ export class ChatGptModelAdapter extends ModelExecutionAdapter {
     const args = ['exec', prompt, '--skip-git-repo-check', '--json'];
 
     return new Promise((resolve) => {
-      const child = spawn(this.cliPath, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+      const child = spawn(this.cliPath, args, { stdio: ['ignore', 'pipe', 'pipe'], env: getScrubbedEnv() });
       const job = { child, startMs, cancelled: false };
       this.activeJobs.set(resolvedId, job);
 

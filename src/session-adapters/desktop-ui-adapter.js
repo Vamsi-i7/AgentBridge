@@ -3,6 +3,7 @@ import { probeApplicationUI } from '../../tools/mac-ui-probe/probe.js';
 import { sendDesktopNotification, activateDesktopApp } from './desktop-notifier.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { getScrubbedEnv } from '../utils/scrubbed-env.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -58,7 +59,7 @@ export class DesktopUIAdapter extends AgentSessionAdapter {
 
   async isRunning() {
     try {
-      const { stdout } = await execFileAsync('pgrep', ['-i', '-f', this.targetApp]);
+      const { stdout } = await execFileAsync('pgrep', ['-i', '-f', this.targetApp], { env: getScrubbedEnv() });
       return stdout.trim().length > 0;
     } catch {
       return false;
@@ -270,7 +271,7 @@ export class DesktopUIAdapter extends AgentSessionAdapter {
     `;
 
     try {
-      const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', jxaInsertScript], { timeout: 5000 });
+      const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', jxaInsertScript], { timeout: 5000, env: getScrubbedEnv() });
       const parsed = JSON.parse(stdout.trim());
       return { submitted: parsed.ok, error: parsed.error };
     } catch (err) {

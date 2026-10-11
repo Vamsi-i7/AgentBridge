@@ -1,6 +1,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
+import { getScrubbedEnv } from './utils/scrubbed-env.js';
 import { CONFIG } from './config.js';
 import { timingSafeEqualString } from './config-resolver.js';
 import { ToolRegistry } from './tool-registry.js';
@@ -48,7 +49,7 @@ export class BridgeHttpServer {
     if (!this.diagnostics.startupStamp) {
       let gitHead = 'unknown';
       try {
-        gitHead = execSync('git rev-parse HEAD', { cwd: CONFIG.BRIDGE_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        gitHead = execSync('git rev-parse HEAD', { cwd: CONFIG.BRIDGE_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: getScrubbedEnv() }).trim();
       } catch {}
       this.diagnostics.setStartupStamp({
         gitHead,
@@ -65,7 +66,7 @@ export class BridgeHttpServer {
     // loudly rather than running unauthenticated. Local desktop usage defaults
     // to no network auth because no HTTP listener is started by default.
     const defaultGatewayPort = Number(process.env.AGENT_BRIDGE_HTTP_PORT || 8765);
-    const isGatewayServer = options.port === defaultGatewayPort || (!options.port && !options.host);
+    const isGatewayServer = options.port === defaultGatewayPort || (options.port === undefined && !options.host);
 
     if (options.apiKey !== undefined) {
       this.apiKey = options.apiKey;
@@ -182,7 +183,7 @@ export class BridgeHttpServer {
       return {
         authorized: true,
         isPrivileged: false,
-        agentId: claimedHeaderAgent ? String(claimedHeaderAgent).trim().toLowerCase() : null,
+        agentId: 'anonymous',
         unauthenticatedLocal: true
       };
     }

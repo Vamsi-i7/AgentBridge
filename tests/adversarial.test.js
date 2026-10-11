@@ -264,6 +264,9 @@ test('Agent Bridge Adversarial & Security Suite', async (t) => {
   });
 
   await t.test('HTTP: concurrent requests preserve request/response correlation', async () => {
+    // Stage 1.1 hardening: unbound HTTP callers are always resolved as 'anonymous'
+    // regardless of the agentId argument they supply. The critical invariant is
+    // response-id <-> request-id correlation under concurrency.
     const calls = Array.from({ length: 24 }, (_, i) => rpc(PORT, {
       jsonrpc: '2.0', id: 1000 + i, method: 'tools/call',
       params: { name: 'bridge_ping', arguments: { agentId: i % 2 ? 'claude-desktop' : 'chatgpt-desktop' } }
@@ -273,8 +276,9 @@ test('Agent Bridge Adversarial & Security Suite', async (t) => {
       assert.strictEqual(r.status, 200);
       assert.strictEqual(r.json.id, 1000 + i, `response id must match request id at index ${i}`);
       const payload = JSON.parse(r.json.result.content[0].text);
-      const expected = i % 2 ? 'claude-desktop' : 'chatgpt-desktop';
-      assert.strictEqual(payload.caller, expected);
+      // Unbound callers must be anonymous — the supplied agentId must never be trusted.
+      assert.strictEqual(payload.caller, 'anonymous',
+        `unbound HTTP caller at index ${i} must be 'anonymous', not the supplied agentId`);
     });
   });
 

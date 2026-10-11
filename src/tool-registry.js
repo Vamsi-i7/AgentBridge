@@ -23,6 +23,17 @@ function trustedCallerAgentId(ctx) {
   return ctx.agentId || ctx.boundAgentId || ctx.identity?.boundAgentId || null;
 }
 
+function assertGitMutationAllowed(ctx, callerAgent) {
+  if (ctx && ctx.isPrivileged) return;
+  const allowed = (CONFIG.GIT_MUTATION_ALLOWED_AGENTS || []).map(a => a.toLowerCase());
+  const normCaller = callerAgent ? String(callerAgent).trim().toLowerCase() : 'anonymous';
+  if (!normCaller || normCaller === 'anonymous' || !allowed.includes(normCaller)) {
+    const err = new Error(`Unauthorized: agent '${callerAgent || 'anonymous'}' is not permitted to mutate git state (commit/push/branch). Git mutations are default-denied for all agents unless explicitly configured in GIT_MUTATION_ALLOWED_AGENTS.`);
+    err.code = 'UNAUTHORIZED_GIT_MUTATION';
+    throw err;
+  }
+}
+
 async function resolveArtifactStore(ctx) {
   if (ctx.artifactStore) return ctx.artifactStore;
   let store = artifactStoreCache.get(ctx);
@@ -307,7 +318,7 @@ export class ToolRegistry {
       tool = {
         name: 'bridge_acknowledge_delivery',
         handler: async (args, ctx) => {
-          const callerAgentId = ctx.agentId || ctx.boundAgentId || args.agentId || 'anonymous';
+          const callerAgentId = trustedCallerAgentId(ctx) || 'anonymous';
           return ctx.mailbox.acknowledgeDelivery({
             requestId: args.requestId,
             agentId: callerAgentId
@@ -544,45 +555,71 @@ export class ToolRegistry {
 
     // Resolve caller identity through AgentIdentityManager. The resolved
     // identity is authoritative for authorization; a caller cannot substitute
-    // an arbitrary agentId/fromAgent for a different identity.
+    // an arbitrary agentId/fromAgent/approver/actor for a different identity.
     let callerAgentId = null;
+    const rawBound = context.agentId || context.boundAgentId || null;
+    const boundTransportId = rawBound && rawBound !== 'anonymous' ? rawBound : null;
+
     if (context.identity) {
-      const candidate = rawArgs.agentId || rawArgs.fromAgent || context.agentId || null;
+      const candidate = rawArgs.agentId || rawArgs.fromAgent || context.agentId || context.boundAgentId || null;
       const resolved = context.identity.resolveIdentity(candidate, {
         token: rawArgs.token,
         allowCompatibility: context.allowIdentityCompatibility
       });
       const isAuthenticated = context.isPrivileged === true ||
-        (Boolean(context.agentId) && context.agentId.toLowerCase() === (resolved.agentId || '').toLowerCase()) ||
+        (Boolean(boundTransportId) && boundTransportId.toLowerCase() === (resolved.agentId || '').toLowerCase()) ||
         resolved.authenticated === true;
       if (context.requireAuthentication === true && !isAuthenticated) {
         throw new Error(`Unauthorized: caller for tool '${name}' could not be authenticated.`);
       }
-      if (context.agentId && !context.isPrivileged && rawArgs.agentId && String(rawArgs.agentId).trim().toLowerCase() !== String(context.agentId).trim().toLowerCase()) {
-        throw new Error(`Unauthorized: caller '${context.agentId}' cannot impersonate or act as '${rawArgs.agentId}'.`);
+      if (boundTransportId && !context.isPrivileged && rawArgs.agentId && String(rawArgs.agentId).trim().toLowerCase() !== String(boundTransportId).trim().toLowerCase()) {
+        throw new Error(`Unauthorized: caller '${boundTransportId}' cannot impersonate or act as '${rawArgs.agentId}'.`);
       }
-      callerAgentId = resolved.agentId;
-    } else if (context.agentId) {
+      if (boundTransportId && !context.isPrivileged && rawArgs.fromAgent && String(rawArgs.fromAgent).trim().toLowerCase() !== String(boundTransportId).trim().toLowerCase()) {
+        throw new Error(`Unauthorized: caller '${boundTransportId}' cannot send as '${rawArgs.fromAgent}'.`);
+      }
+      if (boundTransportId && !context.isPrivileged && rawArgs.approver && String(rawArgs.approver).trim().toLowerCase() !== String(boundTransportId).trim().toLowerCase()) {
+        throw new Error(`Unauthorized: caller '${boundTransportId}' cannot act as approver '${rawArgs.approver}'.`);
+      }
+      if (boundTransportId && !context.isPrivileged && rawArgs.actor && String(rawArgs.actor).trim().toLowerCase() !== String(boundTransportId).trim().toLowerCase()) {
+        throw new Error(`Unauthorized: caller '${boundTransportId}' cannot act as '${rawArgs.actor}'.`);
+      }
+
+      if (!boundTransportId && !resolved.authenticated && !context.isPrivileged) {
+        callerAgentId = 'anonymous';
+      } else {
+        callerAgentId = resolved.agentId;
+      }
+    } else if (boundTransportId) {
       // Bound/authenticated identity from transport
-      const boundId = String(context.agentId).trim().toLowerCase();
+      const boundId = String(boundTransportId).trim().toLowerCase();
       if (!context.isPrivileged) {
         if (rawArgs.agentId && String(rawArgs.agentId).trim().toLowerCase() !== boundId) {
-          throw new Error(`Unauthorized: caller '${context.agentId}' cannot impersonate or act as '${rawArgs.agentId}'.`);
+          throw new Error(`Unauthorized: caller '${boundTransportId}' cannot impersonate or act as '${rawArgs.agentId}'.`);
         }
         if (rawArgs.fromAgent && String(rawArgs.fromAgent).trim().toLowerCase() !== boundId) {
-          throw new Error(`Unauthorized: caller '${context.agentId}' cannot send as '${rawArgs.fromAgent}'.`);
+          throw new Error(`Unauthorized: caller '${boundTransportId}' cannot send as '${rawArgs.fromAgent}'.`);
+        }
+        if (rawArgs.approver && String(rawArgs.approver).trim().toLowerCase() !== boundId) {
+          throw new Error(`Unauthorized: caller '${boundTransportId}' cannot act as approver '${rawArgs.approver}'.`);
+        }
+        if (rawArgs.actor && String(rawArgs.actor).trim().toLowerCase() !== boundId) {
+          throw new Error(`Unauthorized: caller '${boundTransportId}' cannot act as '${rawArgs.actor}'.`);
         }
       }
-      callerAgentId = context.agentId;
+      callerAgentId = boundTransportId;
     } else if (context.isPrivileged === true) {
       callerAgentId = rawArgs.agentId || rawArgs.fromAgent || 'system';
     } else {
       callerAgentId = 'anonymous';
     }
 
-    // Attach resolved agentId to arguments
+    // Attach resolved agentId to arguments and context
+    context.agentId = callerAgentId;
     const args = { ...rawArgs, agentId: callerAgentId };
     if (rawArgs.fromAgent) args.fromAgent = callerAgentId;
+    if (rawArgs.approver) args.approver = callerAgentId;
+    if (rawArgs.actor) args.actor = callerAgentId;
 
     // Classification & Authoritative Execution Boundary Check
     const effectful = isEffectfulTool(name);
@@ -1241,7 +1278,11 @@ export class ToolRegistry {
         },
         required: ['repoPath', 'branchName', 'agentId']
       },
-      handler: async (args, ctx) => ctx.git.createBranch(args.repoPath, args.agentId, args.branchName, args.startPoint)
+      handler: async (args, ctx) => {
+        const callerAgent = trustedCallerAgentId(ctx);
+        assertGitMutationAllowed(ctx, callerAgent);
+        return ctx.git.createBranch(args.repoPath, callerAgent, args.branchName, args.startPoint);
+      }
     });
 
     this.registerTool({
@@ -1257,7 +1298,13 @@ export class ToolRegistry {
         },
         required: ['repoPath', 'branchName', 'agentId']
       },
-      handler: async (args, ctx) => ctx.git.switchBranch(args.repoPath, args.agentId, args.branchName, args.createIfMissing)
+      handler: async (args, ctx) => {
+        const callerAgent = trustedCallerAgentId(ctx);
+        if (args.createIfMissing) {
+          assertGitMutationAllowed(ctx, callerAgent);
+        }
+        return ctx.git.switchBranch(args.repoPath, callerAgent, args.branchName, args.createIfMissing);
+      }
     });
 
     this.registerTool({
@@ -1273,7 +1320,11 @@ export class ToolRegistry {
         },
         required: ['repoPath', 'branchName', 'agentId']
       },
-      handler: async (args, ctx) => ctx.git.deleteBranch(args.repoPath, args.agentId, args.branchName, args.force)
+      handler: async (args, ctx) => {
+        const callerAgent = trustedCallerAgentId(ctx);
+        assertGitMutationAllowed(ctx, callerAgent);
+        return ctx.git.deleteBranch(args.repoPath, callerAgent, args.branchName, args.force);
+      }
     });
 
     this.registerTool({
@@ -1289,7 +1340,11 @@ export class ToolRegistry {
         },
         required: ['repoPath', 'agentId']
       },
-      handler: async (args, ctx) => ctx.git.stage(args.repoPath, args.agentId, args.files, args.stageAll)
+      handler: async (args, ctx) => {
+        const callerAgent = trustedCallerAgentId(ctx);
+        assertGitMutationAllowed(ctx, callerAgent);
+        return ctx.git.stage(args.repoPath, callerAgent, args.files, args.stageAll);
+      }
     });
 
     this.registerTool({
@@ -1306,7 +1361,11 @@ export class ToolRegistry {
         },
         required: ['repoPath', 'message', 'agentId']
       },
-      handler: async (args, ctx) => ctx.git.commit(args.repoPath, args.agentId, args.message, args.files, args.stageAll)
+      handler: async (args, ctx) => {
+        const callerAgent = trustedCallerAgentId(ctx);
+        assertGitMutationAllowed(ctx, callerAgent);
+        return ctx.git.commit(args.repoPath, callerAgent, args.message, args.files, args.stageAll);
+      }
     });
 
     this.registerTool({
@@ -1342,7 +1401,7 @@ export class ToolRegistry {
 
     this.registerTool({
       name: 'bridge_git_push',
-      description: 'Autonomous Git push to remote with repo, remote, branch, and commit validation. Does NOT require human confirmation.',
+      description: 'Git push to remote with repo, remote, branch, and commit validation. Requires policy authorization and human confirmation.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1356,13 +1415,17 @@ export class ToolRegistry {
         },
         required: ['repoPath', 'agentId']
       },
-      handler: async (args, ctx) => ctx.git.push(args.repoPath, args.agentId, {
-        remote: args.remote,
-        branch: args.branch,
-        allowProtected: args.allowProtected,
-        dryRun: args.dryRun,
-        verbose: args.verbose
-      })
+      handler: async (args, ctx) => {
+        const callerAgent = trustedCallerAgentId(ctx);
+        assertGitMutationAllowed(ctx, callerAgent);
+        return ctx.git.push(args.repoPath, callerAgent, {
+          remote: args.remote,
+          branch: args.branch,
+          allowProtected: ctx.isPrivileged === true ? Boolean(args.allowProtected) : false,
+          dryRun: args.dryRun,
+          verbose: args.verbose
+        });
+      }
     });
 
     this.registerTool({

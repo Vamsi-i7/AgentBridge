@@ -41,6 +41,9 @@ test('Agent Bridge Tool Matrix — all registered tools exercised', async (t) =>
   rmDb();
   if (!fs.existsSync(WS)) fs.mkdirSync(WS, { recursive: true });
 
+  const prevAllowed = CONFIG.GIT_MUTATION_ALLOWED_AGENTS;
+  CONFIG.GIT_MUTATION_ALLOWED_AGENTS = [AGENT];
+
   const logger = new AuditLogger(TEST_DB);
   const guard = new PermissionGuard(CONFIG);
   const concurrency = new ConcurrencyManager();
@@ -94,7 +97,7 @@ test('Agent Bridge Tool Matrix — all registered tools exercised', async (t) =>
   run(repoDir, 'remote', 'add', 'origin', bareDir);
 
   // entities
-  const task = mailbox.delegateTask({ fromAgent: AGENT, toAgent: 'chatgpt-desktop', title: 'matrix task', instructions: 'do it' });
+  const task = mailbox.delegateTask({ fromAgent: 'chatgpt-desktop', toAgent: AGENT, title: 'matrix task', instructions: 'do it' });
   const collab = collaboration.create({ ownerAgent: AGENT, title: 'matrix collab', objective: 'exercise tools' });
   collaboration.join({ collaborationId: collab.id, agentId: AGENT });
   // Addressed to the bound agent (AGENT) so the bound caller may legitimately answer it.
@@ -153,11 +156,11 @@ test('Agent Bridge Tool Matrix — all registered tools exercised', async (t) =>
     ['bridge_git_delete_branch', { repoPath: repoDir, branchName: 'matrix-created', force: true, agentId: AGENT }],
     ['bridge_send_message', { fromAgent: AGENT, toAgent: 'chatgpt-desktop', subject: 'matrix', content: 'hello' }],
     ['bridge_broadcast_message', { fromAgent: AGENT, toAgents: ['chatgpt-desktop', 'antigravity-ide'], subject: 'matrix b', content: 'broadcast' }],
-    ['bridge_check_inbox', { agentId: 'chatgpt-desktop', compact: true }],
+    ['bridge_check_inbox', { agentId: AGENT, compact: true }],
     ['bridge_delegate_task', { fromAgent: AGENT, toAgent: 'chatgpt-desktop', title: 'matrix delegated', instructions: 'x' }],
-    ['bridge_claim_task', { agentId: 'chatgpt-desktop' }],
+    ['bridge_claim_task', { agentId: AGENT }],
     ['bridge_get_task_status', { taskId: task.id }],
-    ['bridge_submit_task_result', { taskId: task.id, agentId: 'chatgpt-desktop', status: 'completed', result: 'done' }],
+    ['bridge_submit_task_result', { taskId: task.id, agentId: AGENT, status: 'completed', result: 'done' }],
     ['bridge_ask_agent', { fromAgent: AGENT, toAgent: 'chatgpt-desktop', question: 'matrix sync question' }],
     ['bridge_get_request_status', { requestId: pending.requestId }],
     ['bridge_get_response', { requestId: pending.requestId }],
@@ -242,6 +245,7 @@ test('Agent Bridge Tool Matrix — all registered tools exercised', async (t) =>
   });
 
   t.after(() => {
+    CONFIG.GIT_MUTATION_ALLOWED_AGENTS = prevAllowed;
     try { eventBus.close(); } catch {}
     try { logger.close(); } catch {}
     try { fs.rmSync(repoDir, { recursive: true, force: true }); } catch {}

@@ -61,7 +61,12 @@ test('ChatGptLocalEngineAdapter — hardened headless Q&A', async (t) => {
   }
 
   function adapter(options = {}) {
-    return new ChatGptLocalEngineAdapter({ cliPath: fakeCli, defaultTimeoutMs: 5000, ...options });
+    // Forward FAKE_CODEX_MODE into the adapter's extraEnv so the scrubbed spawn
+    // env includes this test-control variable without bypassing the allowlist.
+    const extraEnv = process.env.FAKE_CODEX_MODE !== undefined
+      ? { FAKE_CODEX_MODE: process.env.FAKE_CODEX_MODE }
+      : {};
+    return new ChatGptLocalEngineAdapter({ cliPath: fakeCli, defaultTimeoutMs: 5000, extraEnv, ...options });
   }
 
   await t.test('success: assembles text and usage, runs in a fresh temp cwd', async () => {

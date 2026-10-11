@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { ConcurrencyManager } from './concurrency-manager.js';
 import { CacheManager } from './cache-manager.js';
 import { RepoSymbolOutlineGenerator } from './code-intelligence/repo-code-map.js';
+import { getScrubbedEnv } from './utils/scrubbed-env.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -256,7 +257,8 @@ export class ProjectController {
 
         const { stdout } = await execFileAsync(rgPath, rgArgs, {
           timeout: 4000,
-          maxBuffer: 4 * 1024 * 1024
+          maxBuffer: 4 * 1024 * 1024,
+          env: getScrubbedEnv()
         });
 
         const lines = stdout.split('\n').filter(Boolean);
@@ -390,7 +392,7 @@ export class ProjectController {
 
     if (ext === '.js' || ext === '.mjs' || ext === '.cjs') {
       try {
-        await execFileAsync(process.execPath, ['--check', resolved], { timeout: 5000 });
+        await execFileAsync(process.execPath, ['--check', resolved], { timeout: 5000, env: getScrubbedEnv() });
       } catch (err) {
         valid = false;
         syntaxError = (err.stderr || err.message || '').trim();
@@ -405,7 +407,7 @@ export class ProjectController {
       }
     } else if (ext === '.py') {
       try {
-        await execFileAsync('python3', ['-m', 'py_compile', resolved], { timeout: 5000 });
+        await execFileAsync('python3', ['-m', 'py_compile', resolved], { timeout: 5000, env: getScrubbedEnv() });
       } catch (err) {
         valid = false;
         syntaxError = (err.stderr || err.message || '').trim();
@@ -1037,13 +1039,7 @@ export class ProjectController {
       throw new Error(cmdCheck.reason);
     }
 
-    const scrubbedEnv = {
-      PATH: process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin',
-      HOME: process.env.HOME || '/Users/jayanthpranaykonada',
-      USER: process.env.USER || 'jayanthpranaykonada',
-      SHELL: '/bin/zsh',
-      LANG: 'en_US.UTF-8'
-    };
+    const scrubbedEnv = getScrubbedEnv();
 
     try {
       const { stdout, stderr } = await execAsync(cmdCheck.command, {

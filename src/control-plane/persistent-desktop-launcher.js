@@ -2,6 +2,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SwiftAXBridge } from './swift-ax-bridge.js';
 import { RegistrySessionState } from './persistent-session-registry.js';
+import { getScrubbedEnv } from '../utils/scrubbed-env.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -35,7 +36,7 @@ export class PersistentDesktopLauncher {
       // Running but windowless: unhide and open to trigger window recreation
       await this.swiftBridge.unhideApp(targetApp);
       try {
-        await execFileAsync('open', ['-a', targetApp]);
+        await execFileAsync('open', ['-a', targetApp], { env: getScrubbedEnv() });
         await new Promise(r => setTimeout(r, 600));
       } catch {}
 
@@ -50,12 +51,13 @@ export class PersistentDesktopLauncher {
         `--remote-debugging-port=${debugPort}`
       ], {
         detached: true,
-        stdio: 'ignore'
+        stdio: 'ignore',
+        env: getScrubbedEnv()
       });
       child.unref();
     } else {
       // Standard macOS launch
-      await execFileAsync('open', ['-a', targetApp]);
+      await execFileAsync('open', ['-a', targetApp], { env: getScrubbedEnv() });
     }
 
     // Wait for process readiness

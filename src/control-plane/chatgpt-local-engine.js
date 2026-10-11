@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { DesktopControlAdapter, AdapterHealth } from './desktop-control-adapter.js';
+import { getScrubbedEnv } from '../utils/scrubbed-env.js';
 
 const DEFAULT_CODEX_PATH = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
 
@@ -25,6 +26,11 @@ export class ChatGptLocalEngineAdapter extends DesktopControlAdapter {
     this.enabled = options.enabled !== false;
     this.defaultModel = options.model || null;
     this.defaultTimeoutMs = options.defaultTimeoutMs || 60000;
+
+    // Optional extra env vars to merge into the scrubbed spawn env.
+    // Use ONLY for non-secret, test-control variables (e.g. FAKE_CODEX_MODE).
+    // These are merged on top of the scrubbed whitelist — secrets must never appear here.
+    this._extraEnv = (options.extraEnv && typeof options.extraEnv === 'object') ? options.extraEnv : {};
 
     // Active turns map: requestId -> activeJob
     this.activeJobs = new Map();
@@ -300,7 +306,11 @@ export class ChatGptLocalEngineAdapter extends DesktopControlAdapter {
 
     return new Promise((resolve) => {
       const startMs = Date.now();
-      const spawnOptions = { stdio: ['ignore', 'pipe', 'pipe'], env: process.env };
+      const spawnEnv = getScrubbedEnv(Object.assign(
+        workDir ? { PWD: workDir } : {},
+        this._extraEnv
+      ));
+      const spawnOptions = { stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv };
       if (workDir) spawnOptions.cwd = workDir;
       if (detached) spawnOptions.detached = true;
 

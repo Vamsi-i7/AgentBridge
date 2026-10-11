@@ -8,6 +8,7 @@ import {
   CompletionEvidenceTier
 } from './route-interface.js';
 import { RouteEvidence } from '../capabilities/agent-manifest.js';
+import { getScrubbedEnv } from '../utils/scrubbed-env.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -42,7 +43,7 @@ export class CliProcessAdapter extends BaseRouteAdapter {
           binPath = path.resolve(this.command);
         }
       } else {
-        const { stdout } = await execFileAsync('which', [this.command]);
+        const { stdout } = await execFileAsync('which', [this.command], { env: getScrubbedEnv() });
         binPath = stdout.trim();
       }
 
@@ -59,9 +60,7 @@ export class CliProcessAdapter extends BaseRouteAdapter {
       // Try reading version non-destructively
       let version = 'unknown';
       try {
-        const hasVersionArg = this.baseArgs.some(a => a.includes('version') || a.includes('help'));
-        const vArgs = hasVersionArg ? [] : ['--version'];
-        const vRun = await execFileAsync(binPath, [...this.baseArgs, ...vArgs], { timeout: 1000 });
+        const vRun = await execFileAsync(binPath, ['--version'], { timeout: 1000, env: getScrubbedEnv() });
         version = (vRun.stdout || vRun.stderr || '').trim().split('\n')[0];
       } catch {
         version = `${this.command} (detected at ${binPath})`;
@@ -167,26 +166,7 @@ export class CliProcessAdapter extends BaseRouteAdapter {
 
       let child;
       try {
-        const ALLOWED_ENV_VARS = [
-          'PATH',
-          'HOME',
-          'LANG',
-          'LC_ALL',
-          'LC_CTYPE',
-          'TERM',
-          'TMPDIR',
-          'USER',
-          'SHELL'
-        ];
-        const scrubbedEnv = {};
-        for (const key of ALLOWED_ENV_VARS) {
-          if (process.env[key] !== undefined) {
-            scrubbedEnv[key] = process.env[key];
-          }
-        }
-        if (this.options.env && typeof this.options.env === 'object') {
-          Object.assign(scrubbedEnv, this.options.env);
-        }
+        const scrubbedEnv = getScrubbedEnv(this.options.env);
 
         child = spawn(this.command, spawnArgs, {
           stdio: ['pipe', 'pipe', 'pipe'],

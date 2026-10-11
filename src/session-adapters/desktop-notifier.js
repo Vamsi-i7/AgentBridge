@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { getScrubbedEnv } from '../utils/scrubbed-env.js';
 
 /**
  * Standard macOS notification and app activation helper for desktop agents.
@@ -20,7 +21,7 @@ export function sendDesktopNotification({ title = 'Agent Bridge', subtitle = '',
     const script = `display notification "${cleanMsg}" with title "${cleanTitle}" subtitle "${cleanSub}"${soundClause}`;
 
     try {
-      execFile('osascript', ['-e', script], { timeout: 3000 }, (err) => {
+      execFile('osascript', ['-e', script], { timeout: 3000, env: getScrubbedEnv() }, (err) => {
         resolve(!err);
       });
     } catch {
@@ -36,7 +37,7 @@ export function activateDesktopApp(appName) {
     const script = `tell application "${cleanName}" to activate`;
 
     try {
-      execFile('osascript', ['-e', script], { timeout: 3000 }, (err) => {
+      execFile('osascript', ['-e', script], { timeout: 3000, env: getScrubbedEnv() }, (err) => {
         resolve(!err);
       });
     } catch {

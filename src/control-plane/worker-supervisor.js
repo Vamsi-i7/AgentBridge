@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import EventEmitter from 'node:events';
 import { CONFIG } from '../config.js';
+import { getScrubbedEnv } from '../utils/scrubbed-env.js';
 
 export class WorkerSupervisor extends EventEmitter {
   constructor(options = {}) {
@@ -109,11 +110,12 @@ export class WorkerSupervisor extends EventEmitter {
       spawnArgs.push('--once');
     }
 
-    const env = {
-      ...process.env,
+    const env = getScrubbedEnv({
       AGENT_ID: agentId,
-      NODE_NO_WARNINGS: '1'
-    };
+      NODE_NO_WARNINGS: '1',
+      NODE_ENV: process.env.NODE_ENV,
+      ...(options.env || {})
+    });
 
     const detached = Boolean(options.detached);
     const child = spawn(process.execPath, spawnArgs, {
