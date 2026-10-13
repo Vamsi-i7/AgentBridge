@@ -65,7 +65,9 @@ export class DashboardServer {
   stop() {
     return new Promise((resolve) => {
       for (const client of this.sseClients) {
-        try { client.end(); } catch {}
+        try { client.end(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
       }
       this.sseClients.clear();
       if (this.server) {

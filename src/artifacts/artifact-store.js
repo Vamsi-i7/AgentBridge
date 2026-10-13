@@ -298,14 +298,18 @@ export class ArtifactStore {
         }
         const rRow = this.db.prepare('SELECT from_agent FROM bridge_requests WHERE task_id = ? OR request_id = ?').get(taskId, taskId);
         if (rRow?.from_agent) verifiedStakeholders.push(rRow.from_agent);
-      } catch {}
+      } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
     }
     const effectiveRequestId = requestId || (metadata && typeof metadata === 'object' ? metadata.requestId : null);
     if (effectiveRequestId) {
       try {
         const rRow = this.db.prepare('SELECT from_agent FROM bridge_requests WHERE request_id = ?').get(effectiveRequestId);
         if (rRow?.from_agent) verifiedStakeholders.push(rRow.from_agent);
-      } catch {}
+      } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
     }
     const finalMeta = effectiveRequestId ? { ...(metadata || {}), requestId: effectiveRequestId } : metadata;
     const authorized = Array.from(new Set([
@@ -377,7 +381,9 @@ export class ArtifactStore {
           if (rRow && (rRow.from_agent === agentId || rRow.to_agent === agentId)) {
             isVerifiedStakeholder = true;
           }
-        } catch {}
+        } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
       }
       if (!isVerifiedStakeholder && row.metadata) {
         try {
@@ -388,7 +394,9 @@ export class ArtifactStore {
               isVerifiedStakeholder = true;
             }
           }
-        } catch {}
+        } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
       }
       if (!isVerifiedStakeholder) {
         throw new ArtifactError(`Agent '${agentId}' is not authorized for artifact '${row.artifact_id}'`, 'ARTIFACT_UNAUTHORIZED');
@@ -490,7 +498,9 @@ export class ArtifactStore {
       bytesRead = fs.readSync(fd, chunkBuf, 0, boundedLength, safeOffset);
     } finally {
       if (fd !== null) {
-        try { fs.closeSync(fd); } catch {}
+        try { fs.closeSync(fd); } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
     }
 
@@ -568,7 +578,9 @@ export class ArtifactStore {
       throw err;
     } finally {
       if (fd !== null) {
-        try { fs.closeSync(fd); } catch {}
+        try { fs.closeSync(fd); } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
     }
 
@@ -860,7 +872,9 @@ export class ArtifactStore {
     }
 
     if (session.bytesWritten === 0) {
-      try { fs.rmSync(session.stagingPath, { force: true }); } catch {}
+      try { fs.rmSync(session.stagingPath, { force: true }); } catch  {
+      // swallow-ok: process or file cleanup
+    }
       this.uploadSessions.delete(uploadId);
       throw new ArtifactError('Refusing to finalize empty artifact', 'ARTIFACT_EMPTY');
     }
@@ -871,7 +885,9 @@ export class ArtifactStore {
 
     const overallSha256 = session.hasher.digest('hex');
     if (expectedSha256 && expectedSha256 !== overallSha256) {
-      try { fs.rmSync(session.stagingPath, { force: true }); } catch {}
+      try { fs.rmSync(session.stagingPath, { force: true }); } catch  {
+      // swallow-ok: process or file cleanup
+    }
       this.uploadSessions.delete(uploadId);
       throw new ArtifactError(`Artifact SHA-256 integrity verification failed: expected ${expectedSha256}, got ${overallSha256}`, 'ARTIFACT_INTEGRITY_FAILURE');
     }
@@ -879,7 +895,9 @@ export class ArtifactStore {
     const detected = session.firstChunk ? detectMimeType(session.firstChunk) : null;
     const effectiveMime = detected || session.mimeType || 'application/octet-stream';
     if (!this.allowedMime.has(effectiveMime)) {
-      try { fs.rmSync(session.stagingPath, { force: true }); } catch {}
+      try { fs.rmSync(session.stagingPath, { force: true }); } catch  {
+      // swallow-ok: process or file cleanup
+    }
       this.uploadSessions.delete(uploadId);
       throw new ArtifactError(`MIME type '${effectiveMime}' is not permitted`, 'ARTIFACT_MIME_UNSUPPORTED');
     }
@@ -903,7 +921,9 @@ export class ArtifactStore {
         const tRow = this.db.prepare('SELECT creator, from_agent FROM tasks WHERE id = ?').get(session.taskId);
         if (tRow?.creator) verifiedStakeholders.push(tRow.creator);
         if (tRow?.from_agent) verifiedStakeholders.push(tRow.from_agent);
-      } catch {}
+      } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
     }
     const authorized = Array.from(new Set([
       ...verifiedStakeholders,
@@ -966,7 +986,9 @@ export class ArtifactStore {
       readableStream.on('error', (err) => {
         const session = this.uploadSessions.get(uploadId);
         if (session) {
-          try { fs.rmSync(session.stagingPath, { force: true }); } catch {}
+          try { fs.rmSync(session.stagingPath, { force: true }); } catch  {
+      // swallow-ok: process or file cleanup
+    }
           this.uploadSessions.delete(uploadId);
         }
         reject(err);
@@ -1047,7 +1069,9 @@ export class ArtifactStore {
           }
         }
       }
-    } catch {}
+    } catch  {
+      // swallow-ok: process or file cleanup
+    }
 
     return { cleaned };
   }

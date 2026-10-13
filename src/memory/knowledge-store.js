@@ -106,12 +106,16 @@ export class KnowledgeStore {
       `ALTER TABLE bridge_knowledge ADD COLUMN valid_until TEXT;`,
       `ALTER TABLE bridge_knowledge ADD COLUMN source_file TEXT;`
     ]) {
-      try { this.db.exec(ddl); } catch {}
+      try { this.db.exec(ddl); } catch  {
+      // swallow-ok: DDL schema idempotency check
+    }
     }
 
     try {
       this.db.exec(`CREATE INDEX IF NOT EXISTS idx_bridge_knowledge_status ON bridge_knowledge(status);`);
-    } catch {}
+    } catch  {
+      // swallow-ok: DDL schema idempotency check
+    }
 
     // FTS5 Virtual Table for full-text lexical search with BM25 ranking
     try {
@@ -518,7 +522,9 @@ export class KnowledgeStore {
     let ftsCount = 0;
     try {
       ftsCount = this.db.prepare('SELECT COUNT(*) as cnt FROM bridge_knowledge_fts').get()?.cnt || 0;
-    } catch {}
+    } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
     return {
       consistent: rowCount === ftsCount,
       rowCount,
@@ -533,7 +539,9 @@ export class KnowledgeStore {
   reindexFts() {
     try {
       this.db.prepare('DELETE FROM bridge_knowledge_fts').run();
-    } catch {}
+    } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
     const rows = this.db.prepare('SELECT key, title, content, tags, category FROM bridge_knowledge').all();
     const insertStmt = this.db.prepare(`
       INSERT INTO bridge_knowledge_fts (key, title, content, tags, category)
@@ -567,7 +575,9 @@ export class KnowledgeStore {
     const info = this.db.prepare('DELETE FROM bridge_knowledge WHERE key = ?').run(cleanKey);
     try {
       this.db.prepare('DELETE FROM bridge_knowledge_fts WHERE key = ?').run(cleanKey);
-    } catch {}
+    } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
 
     this.logger?.log?.({
       agentId,
@@ -632,6 +642,8 @@ export class KnowledgeStore {
       if (this._isSelfCreatedDb && this.db?.close) {
         this.db.close();
       }
-    } catch {}
+    } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
   }
 }

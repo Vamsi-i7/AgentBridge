@@ -17,7 +17,9 @@ function runInImmediateTx(db, fn) {
     return res;
   } catch (err) {
     if (started) {
-      try { db.exec('ROLLBACK;'); } catch {}
+      try { db.exec('ROLLBACK;'); } catch  {
+      // swallow-ok: transaction may already be resolved or closed
+    }
     }
     throw err;
   }

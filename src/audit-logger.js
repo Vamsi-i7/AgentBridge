@@ -4,8 +4,26 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SchemaMigrator } from './storage/schema-migrator.js';
 
+function isTestEnvironment() {
+  return Boolean(
+    process.env.NODE_TEST_CONTEXT ||
+    process.env.NODE_ENV === 'test' ||
+    (Array.isArray(process.execArgv) && process.execArgv.some(a => a.startsWith('--test'))) ||
+    (Array.isArray(process.argv) && process.argv.some(a => a.includes('node:test') || (a.includes('tests/') && a.endsWith('.test.js'))))
+  );
+}
+
 export class AuditLogger {
   constructor(dbPath = CONFIG.DB_PATH) {
+    if (
+      isTestEnvironment() &&
+      !process.env.AGENT_BRIDGE_ALLOW_PROD_DB_IN_TEST &&
+      path.resolve(dbPath) === path.resolve(path.join(CONFIG.BRIDGE_ROOT, 'data', 'bridge.sqlite'))
+    ) {
+      throw new Error(
+        `HermeticityViolation: AuditLogger default constructor resolved to live DB path '${dbPath}' in test environment! Pass an isolated dbPath to new AuditLogger(dbPath).`
+      );
+    }
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -24,7 +42,15 @@ export class AuditLogger {
     try {
       const migrator = new SchemaMigrator(this.db);
       migrator.migrateToLatest();
-    } catch {}
+      migrator.validateRuntimeSchema();
+    } catch (err) {
+      if (err.message?.includes('readonly') || err.message?.includes('READONLY')) {
+        // Read-only database cannot execute migrations; tolerate explicitly
+      } else {
+        console.error('[AuditLogger] Fatal schema migration error:', err.message);
+        throw err;
+      }
+    }
   }
 
   initTables() {
@@ -109,7 +135,9 @@ export class AuditLogger {
 
     try {
       this.db.exec("ALTER TABLE bridge_requests ADD COLUMN delivery_acknowledged_at TEXT;");
-    } catch {}
+    } catch  {
+      // swallow-ok: DDL schema idempotency check
+    }
   }
 
   log({ agentId, action, targetPath = null, command = null, status, details = null, executionMs = 0 }) {

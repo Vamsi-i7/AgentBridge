@@ -86,7 +86,9 @@ export class ModelOrchestrator extends EventEmitter {
             return;
           }
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
 
       timer = setTimeout(() => {
         cleanup();
@@ -96,7 +98,9 @@ export class ModelOrchestrator extends EventEmitter {
             resolve({ status: 'completed', task: late, result: late.result });
             return;
           }
-        } catch {}
+        } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
         resolve({ status: 'timeout', error: 'TIMEOUT_WAITING_FOR_WORKER' });
       }, timeoutMs);
     });

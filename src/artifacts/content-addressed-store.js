@@ -22,7 +22,9 @@ export class ContentAddressedStore {
       if (!fs.existsSync(this.rootDir)) {
         fs.mkdirSync(this.rootDir, { recursive: true });
       }
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
   }
 
   /**
@@ -52,7 +54,9 @@ export class ContentAddressedStore {
     // Persist to disk
     try {
       fs.writeFileSync(filePath, buf);
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
 
     this._addToMemoryCache(hash, buf);
     return { hash, sizeBytes, deduplicated: false };

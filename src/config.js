@@ -12,7 +12,7 @@ const BRIDGE_ROOT = path.resolve(__dirname, '..');
 export const CONFIG = {
   BRIDGE_ROOT,
   DATA_DIR: path.join(BRIDGE_ROOT, 'data'),
-  DB_PATH: path.join(BRIDGE_ROOT, 'data', 'bridge.sqlite'),
+  DB_PATH: process.env.AGENT_BRIDGE_DB_PATH || path.join(BRIDGE_ROOT, 'data', 'bridge.sqlite'),
   TEST_WORKSPACE: path.join(BRIDGE_ROOT, 'test-workspace'),
   ZIA_ROOT: '/Users/jayanthpranaykonada/Zia',
   
@@ -113,9 +113,11 @@ export const CONFIG = {
   // Legacy compatibility: allow a bound connection to *act as* a different
   // known identity. Off by default because it is an impersonation vector.
   // Operators that truly need it can set AGENT_BRIDGE_ALLOW_IDENTITY_COMPATIBILITY=1.
-  ALLOW_IDENTITY_COMPATIBILITY:
-    process.env.AGENT_BRIDGE_ALLOW_IDENTITY_COMPATIBILITY === '1' ||
-    process.env.AGENT_BRIDGE_ALLOW_IDENTITY_COMPATIBILITY === 'true',
+  // Maximum pending age policy (AR-03): pending work older than this is expired to failed with TARGET_UNREACHABLE.
+  // Configurable via AGENT_BRIDGE_MAX_PENDING_AGE_MS (default 24h). Set to 0 to disable.
+  MAX_PENDING_AGE_MS: process.env.AGENT_BRIDGE_MAX_PENDING_AGE_MS !== undefined
+    ? Number(process.env.AGENT_BRIDGE_MAX_PENDING_AGE_MS)
+    : (24 * 60 * 60 * 1000),
 
   // Known agent identities (dynamically incorporates all registered agent manifests)
   get AGENT_IDENTITIES() {

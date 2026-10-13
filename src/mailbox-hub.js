@@ -11,11 +11,11 @@ import {
 import { ResponsePreserver, detectResponseMode, ResponseMode } from './artifacts/response-preserver.js';
 import { ArtifactStore } from './artifacts/artifact-store.js';
 import { TokenAccountant } from './telemetry/token-accountant.js';
-import { CONFIG } from './config.js';
-import { normalizeAgentId } from './agent-identity.js';
+import { normalizeAgentId, canonicalizeTargetAgent, getAliasesFor } from './agent-identity.js';
 import { isEffectfulTool } from './effects/effects-ledger.js';
 import { CheapFirstRouter } from './routing/cheap-first-router.js';
 import { SemanticCache } from './cache/semantic-cache.js';
+import { CONFIG } from './config.js';
 
 export const CONFIDENCE_RANK = Object.freeze({
   UNKNOWN: 0,
@@ -49,6 +49,7 @@ export class MailboxHub {
     if (this.tasks) {
       this.tasks.mailboxHub = this;
     }
+    this.maxPendingAgeMs = CONFIG?.MAX_PENDING_AGE_MS !== undefined ? CONFIG.MAX_PENDING_AGE_MS : (24 * 60 * 60 * 1000);
     this.agentHandlers = new Map(); // agentId -> async (question, context) => response
 
     // Durable response preservation and token accounting.
@@ -110,7 +111,9 @@ export class MailboxHub {
         if (!colNames.has('nonce')) {
           this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN nonce TEXT;`);
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: DDL schema idempotency check
+    }
     }
   }
 
@@ -127,7 +130,9 @@ export class MailboxHub {
     let reqRow = null;
     try {
       reqRow = this.db.prepare('SELECT * FROM bridge_requests WHERE request_id = ?').get(requestId);
-    } catch {}
+    } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
 
     if (!reqRow) {
       if (this.tasks) {
@@ -207,7 +212,9 @@ export class MailboxHub {
           epoch = att.epoch;
           nonce = att.nonce;
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     if (!attemptId) {
@@ -316,12 +323,24 @@ export class MailboxHub {
     }
   }
 
-  recoverExpiredRequests(agentId = null) {
-    if (!this.db) return { changes: 0, recovered: [], uncertain: [] };
+  recoverExpiredRequests(agentIdOrOpts = null) {
+    if (!this.db) return { changes: 0, recovered: [], uncertain: [], expiredPending: [] };
     this._ensureRequestColumns();
     const now = new Date().toISOString();
     const recovered = [];
     const uncertain = [];
+    const expiredPending = [];
+
+    let agentId = null;
+    let maxPendingAgeMs = this.maxPendingAgeMs;
+    if (typeof agentIdOrOpts === 'object' && agentIdOrOpts !== null) {
+      agentId = agentIdOrOpts.agentId || null;
+      if (agentIdOrOpts.maxPendingAgeMs !== undefined) {
+        maxPendingAgeMs = agentIdOrOpts.maxPendingAgeMs;
+      }
+    } else if (typeof agentIdOrOpts === 'string') {
+      agentId = agentIdOrOpts;
+    }
 
     try {
       runInImmediateTx(this.db, () => {
@@ -333,8 +352,11 @@ export class MailboxHub {
         `;
         const params = [now];
         if (agentId) {
-          query += ' AND to_agent = ?';
-          params.push(agentId);
+          const canonicalAgentId = canonicalizeTargetAgent(agentId, { required: false }) || normalizeAgentId(agentId);
+          const candidates = getAliasesFor(canonicalAgentId);
+          const placeholders = candidates.map(() => '?').join(', ');
+          query += ` AND to_agent IN (${placeholders})`;
+          params.push(...candidates);
         }
 
         const rows = this.db.prepare(query).all(...params);
@@ -346,7 +368,9 @@ export class MailboxHub {
               if (parsedCtx?.isIdempotent === true || parsedCtx?.originalContext?.isIdempotent === true) {
                 isIdempotent = true;
               }
-            } catch {}
+            } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
           }
 
           const nextEpoch = (row.epoch || 1) + 1;
@@ -401,14 +425,79 @@ export class MailboxHub {
             });
           }
         }
+
+        // 2. Expire stale pending requests that were never claimed (AR-03)
+        if (typeof maxPendingAgeMs === 'number' && maxPendingAgeMs > 0) {
+          const cutoffIso = new Date(Date.now() - maxPendingAgeMs).toISOString();
+          let pendingQuery = `
+            SELECT * FROM bridge_requests
+            WHERE status = 'pending'
+              AND created_at IS NOT NULL
+              AND created_at < ?
+          `;
+          const pendingParams = [cutoffIso];
+          if (agentId) {
+            const canonicalAgentId = canonicalizeTargetAgent(agentId, { required: false }) || normalizeAgentId(agentId);
+            const candidates = getAliasesFor(canonicalAgentId);
+            const placeholders = candidates.map(() => '?').join(', ');
+            pendingQuery += ` AND to_agent IN (${placeholders})`;
+            pendingParams.push(...candidates);
+          }
+
+          const staleRows = this.db.prepare(pendingQuery).all(...pendingParams);
+          for (const row of staleRows) {
+            const errorMsg = `TARGET_UNREACHABLE: Request expired in pending state without being claimed after ${maxPendingAgeMs}ms (created at ${row.created_at}).`;
+            const res = this.db.prepare(`
+              UPDATE bridge_requests
+              SET status = 'failed',
+                  delivery_state = 'PENDING_EXPIRED',
+                  error = ?,
+                  updated_at = ?
+              WHERE request_id = ? AND status = 'pending'
+            `).run(errorMsg, now, row.request_id);
+
+            if (res.changes > 0) {
+              expiredPending.push({ requestId: row.request_id, error: errorMsg, createdAt: row.created_at });
+              this.logger?.log?.({
+                agentId: row.to_agent || 'system',
+                action: 'pending_request_expired',
+                status: 'failed',
+                details: {
+                  requestId: row.request_id,
+                  fromAgent: row.from_agent,
+                  toAgent: row.to_agent,
+                  createdAt: row.created_at,
+                  reason: errorMsg,
+                  code: 'TARGET_UNREACHABLE'
+                }
+              });
+
+              if (this.eventBus?.publish) {
+                try {
+                  this.eventBus.publish({
+                    type: 'request:failed',
+                    requestId: row.request_id,
+                    fromAgent: row.from_agent,
+                    toAgent: row.to_agent,
+                    status: 'failed',
+                    error: errorMsg,
+                    errorCode: 'TARGET_UNREACHABLE'
+                  });
+                } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
+              }
+            }
+          }
+        }
       });
     } catch (err) {
       this.logger?.debug?.('Error in recoverExpiredRequests', err);
       throw err;
     }
 
-    const totalChanges = recovered.length + uncertain.length;
-    return { changes: totalChanges, recovered, uncertain };
+    const totalChanges = recovered.length + uncertain.length + expiredPending.length;
+    return { changes: totalChanges, recovered, uncertain, expiredPending };
   }
 
   startRecoveryTimer(intervalMs = 2000) {
@@ -463,7 +552,9 @@ export class MailboxHub {
   close() {
     this.stopRecoveryTimer();
     if (this.tasks?.close) {
-      try { this.tasks.close(); } catch {}
+      try { this.tasks.close(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
     }
   }
 
@@ -499,7 +590,7 @@ export class MailboxHub {
     dedupKey = null
   }) {
     const normFrom = normalizeAgentId(fromAgent) || fromAgent;
-    const normTo = normalizeAgentId(toAgent) || toAgent;
+    const normTo = canonicalizeTargetAgent(toAgent, { required: true });
 
     const id = `msg_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const timestamp = new Date().toISOString();
@@ -647,7 +738,7 @@ export class MailboxHub {
       throw err;
     }
     const normFrom = normalizeAgentId(fromAgent) || fromAgent || null;
-    const normTo = normalizeAgentId(toAgent) || toAgent || null;
+    const normTo = canonicalizeTargetAgent(toAgent, { required: true });
 
     const effectiveDedupKey = dedupKey || (
       typeof context === 'object' && context !== null ? context.dedupKey : null
@@ -680,7 +771,9 @@ export class MailboxHub {
           if (reqRow) {
             alreadyExisted = true;
           }
-        } catch {}
+        } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
       }
 
       // Establish uniform request-task correlation in bridge_requests so desktop and autonomous workers can uniformly claim and track all tasks
@@ -774,7 +867,26 @@ export class MailboxHub {
     isIdempotent = false
   }) {
     const normFrom = normalizeAgentId(fromAgent) || fromAgent;
-    const normTo = normalizeAgentId(toAgent) || toAgent;
+
+    let resolvedTo = null;
+    if (toAgent) {
+      try {
+        resolvedTo = canonicalizeTargetAgent(toAgent, { required: true });
+      } catch (err) {
+        return {
+          mode: 'request_failed',
+          fromAgent: normFrom,
+          toAgent,
+          requestId: requestId || `req_unknown_target_${Date.now()}`,
+          conversationId,
+          taskId: null,
+          question,
+          status: 'failed',
+          error: err.message,
+          errorCode: err.code || 'UNKNOWN_AGENT_ID'
+        };
+      }
+    }
 
     if (fromAgent && normFrom !== fromAgent) {
       this.logger?.log?.({
@@ -784,16 +896,15 @@ export class MailboxHub {
         details: { raw: fromAgent, normalized: normFrom, context: 'askAgent.fromAgent' }
       });
     }
-    if (toAgent && normTo !== toAgent) {
+    if (toAgent && resolvedTo !== toAgent) {
       this.logger?.log?.({
-        agentId: normTo,
+        agentId: resolvedTo,
         action: 'agent_alias_normalized',
         status: 'info',
-        details: { raw: toAgent, normalized: normTo, context: 'askAgent.toAgent' }
+        details: { raw: toAgent, normalized: resolvedTo, context: 'askAgent.toAgent' }
       });
     }
 
-    let resolvedTo = normTo || toAgent;
     if (!resolvedTo && this.cheapRouter && this.cheapRouter.enabled) {
       const decision = this.cheapRouter.selectAgent({ toAgent: null, type: arguments[0]?.taskType }, ['gemini', 'freebuff', 'claude-desktop']);
       if (decision?.selectedAgent) {
@@ -814,6 +925,8 @@ export class MailboxHub {
         error: 'EXECUTION_UNSUPPORTED: Target agent must be specified'
       };
     }
+
+    const normTo = resolvedTo;
 
     // Semantic read-only query cache (strictly opt-in, disabled by default)
     if (this.semanticCache && this.semanticCache.enabled && this.semanticCache.isCacheable('READ', question)) {
@@ -972,7 +1085,9 @@ export class MailboxHub {
     if (requestId) {
       try {
         existingReq = this.db.prepare('SELECT * FROM bridge_requests WHERE request_id = ?').get(requestId);
-      } catch {}
+      } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
     }
 
     if (existingReq) {
@@ -1212,7 +1327,9 @@ export class MailboxHub {
       if (isIdempotentReq) {
         try {
           targetDb.prepare(`UPDATE bridge_requests SET is_idempotent = 1 WHERE request_id = ?`).run(reqId);
-        } catch {}
+        } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
       }
 
       if (stageEventFn) {
@@ -1465,7 +1582,9 @@ export class MailboxHub {
       if (existingTask?.context) {
         try {
           ctxObj = typeof existingTask.context === 'string' ? JSON.parse(existingTask.context) : existingTask.context;
-        } catch {}
+        } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
       }
       const hasSideEffects = Boolean(
         existingTask?.hasSideEffects ||
@@ -1522,7 +1641,9 @@ export class MailboxHub {
                 payload: result || error,
                 reason: errMsg
               });
-            } catch {}
+            } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
           }
           return {
             status: 'quarantined',
@@ -1550,7 +1671,9 @@ export class MailboxHub {
                 error: errMsg
               };
             }
-          } catch {}
+          } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
         }
       }
     }
@@ -1574,7 +1697,9 @@ export class MailboxHub {
       let reqRow = null;
       try {
         reqRow = targetDb.prepare('SELECT * FROM bridge_requests WHERE task_id = ? OR request_id = ?').get(taskId, taskId);
-      } catch {}
+      } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
 
       let requestId = reqRow?.request_id;
       let conversationId = reqRow?.conversation_id;
@@ -1584,7 +1709,9 @@ export class MailboxHub {
           const ctxObj = typeof task.context === 'string' ? JSON.parse(task.context) : task.context;
           requestId = ctxObj?.requestId;
           conversationId = ctxObj?.conversationId;
-        } catch {}
+        } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
       }
 
       const now = new Date().toISOString();
@@ -1823,7 +1950,9 @@ export class MailboxHub {
         try {
           const ctxObj = typeof claimed.context === 'string' ? JSON.parse(claimed.context) : claimed.context;
           reqId = ctxObj?.requestId;
-        } catch {}
+        } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
       }
       this.tracer.mark({
         requestId: reqId || `req_${claimed.id}`,
@@ -1901,7 +2030,9 @@ export class MailboxHub {
         SET delivery_acknowledged_at = ?, updated_at = ?
         WHERE request_id = ?
       `).run(now, now, requestId);
-    } catch {}
+    } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
 
     this.logger?.log?.({
       agentId: normCaller || row.from_agent,
@@ -2019,17 +2150,20 @@ export class MailboxHub {
   getPendingRequests(agentId, limit = 10) {
     try {
       this.recoverExpiredRequests(agentId);
+      const canonicalAgentId = canonicalizeTargetAgent(agentId, { required: false }) || normalizeAgentId(agentId);
+      const aliasCandidates = getAliasesFor(canonicalAgentId);
+      const placeholders = aliasCandidates.map(() => '?').join(', ');
       const now = new Date().toISOString();
       const rows = this.db.prepare(`
         SELECT request_id, conversation_id, from_agent, to_agent, question, context, task_id, status, created_at
         FROM bridge_requests
-        WHERE to_agent = ? AND (
+        WHERE to_agent IN (${placeholders}) AND (
           status = 'pending'
           OR (status IN ('claimed', 'in_progress') AND lease_expires_at IS NOT NULL AND lease_expires_at < ?)
         )
         ORDER BY created_at ASC
         LIMIT ?
-      `).all(agentId, now, limit);
+      `).all(...aliasCandidates, now, limit);
       return rows.map(r => ({
         requestId: r.request_id,
         conversationId: r.conversation_id,
@@ -2066,7 +2200,9 @@ export class MailboxHub {
     let reqRow = null;
     try {
       reqRow = this.db.prepare('SELECT * FROM bridge_requests WHERE request_id = ?').get(requestId);
-    } catch {}
+    } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
 
     if (!reqRow) {
       throw new Error(`Request not found: ${requestId}`);
@@ -2144,7 +2280,9 @@ export class MailboxHub {
               payload: response || error,
               reason: errMsg
             });
-          } catch {}
+          } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
         }
         return {
           status: 'quarantined',
@@ -2164,7 +2302,9 @@ export class MailboxHub {
               payload: response || error,
               reason: errMsg
             });
-          } catch {}
+          } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
         }
         return {
           status: 'quarantined',
@@ -2202,7 +2342,9 @@ export class MailboxHub {
       if (reqRow.context) {
         try {
           reqContext = typeof reqRow.context === 'string' ? JSON.parse(reqRow.context) : reqRow.context;
-        } catch {}
+        } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
       }
       const hasSideEffects = Boolean(
         reqContext?.hasSideEffects ||
@@ -2265,7 +2407,9 @@ export class MailboxHub {
                 payload: response || error,
                 reason: errMsg
               });
-            } catch {}
+            } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
           }
           return {
             status: 'quarantined',
@@ -2290,7 +2434,9 @@ export class MailboxHub {
               payload: response || error,
               reason: errMsg
             });
-          } catch {}
+          } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
         }
         return {
           status: 'quarantined',
@@ -2310,7 +2456,9 @@ export class MailboxHub {
               payload: response || error,
               reason: errMsg
             });
-          } catch {}
+          } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
         }
         return {
           status: 'quarantined',

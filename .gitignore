@@ -9,8 +9,9 @@ test-workspace/*-remote.git/
 test-workspace/*_delete_me.txt
 test-workspace/test-stage-repo/
 
-# Compiled native helper binary
+# Compiled native helper binary & build artifacts
 tools/macos-accessibility-helper/bridge-ax-helper
+tools/macos-accessibility-helper/.build/
 
 # Local Freebuff state (also in .git/info/exclude, but that does not travel with the repo)
 .freebuff/

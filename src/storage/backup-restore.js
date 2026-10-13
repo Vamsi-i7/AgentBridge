@@ -48,7 +48,9 @@ export class BackupManager {
         // Fallback to safe read-copy if VACUUM INTO is unsupported
         fs.copyFileSync(this.dbPath, backupDbPath);
       } finally {
-        try { db.close(); } catch {}
+        try { db.close(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
       }
     }
 

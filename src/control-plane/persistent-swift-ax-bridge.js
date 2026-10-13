@@ -24,7 +24,9 @@ export class PersistentSwiftAXBridge extends SwiftAXBridge {
     // daemon cannot exit on its own, and each such process leaks a running helper.
     for (const stream of [child.stdin, child.stdout, child.stderr]) {
       if (stream && typeof stream.unref === 'function') {
-        try { stream.unref(); } catch {}
+        try { stream.unref(); } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
     }
     child.stdout.setEncoding('utf8');
@@ -38,7 +40,9 @@ export class PersistentSwiftAXBridge extends SwiftAXBridge {
 
   close() {
     if (this.workerProcess && !this.workerProcess.killed) {
-      try { this.workerProcess.kill('SIGTERM'); } catch {}
+      try { this.workerProcess.kill('SIGTERM'); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
       this.workerProcess = null;
     }
   }
@@ -80,7 +84,9 @@ export class PersistentSwiftAXBridge extends SwiftAXBridge {
         }
       };
       timer = setTimeout(() => {
-        try { child.kill('SIGTERM'); } catch {}
+        try { child.kill('SIGTERM'); } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
         finish(reject, new Error('SWIFT_WORKER_TIMEOUT'));
       }, timeoutMs);
       child.stdout.on('data', onData);

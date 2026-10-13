@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { activateDesktopApp } from '../session-adapters/desktop-notifier.js';
 import { ConversationLocator } from './conversation-locator.js';
 import { getScrubbedEnv } from '../utils/scrubbed-env.js';
+import { validateTargetApp, escapeJxaString } from '../utils/jxa-sanitizer.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -34,19 +35,24 @@ export class AXEngine {
   }
 
   /**
-   * Inspect complete accessibility hierarchy of target application.
+   * Pure builder for the inspection JXA script.
+   * Validates targetApp and safely escapes all parameters.
    */
-  async inspectApp(targetApp) {
-    const script = `
+  static buildInspectScript(targetApp) {
+    validateTargetApp(targetApp);
+    const safeApp = escapeJxaString(targetApp);
+    return `
       var se = Application("System Events");
-      var procs = se.applicationProcesses.whose({name: "${targetApp}"});
+      var procs = se.applicationProcesses.whose({name: ${safeApp}});
       if (procs.length === 0) {
         JSON.stringify({ running: false, error: "PROCESS_NOT_FOUND" });
       } else {
         var p = procs[0];
         var wins = p.windows();
         var bundleId = "";
-        try { bundleId = p.bundleIdentifier(); } catch(e) {}
+        try { bundleId = p.bundleIdentifier(); } catch (e) {
+          // swallow-ok: safe fallback for non-serializable object
+        }
 
         var elements = [];
         var inputCandidates = [];
@@ -60,42 +66,40 @@ export class AXEngine {
             try {
               var role = elem.role();
               var subrole = "";
-              try { subrole = elem.subrole(); } catch(e) {}
+              try { subrole = elem.subrole(); } catch (e) {
+                // swallow-ok: intentional non-fatal error suppression
+              }
               var title = "";
-              try { title = elem.title(); } catch(e) {}
-              var desc = "";
-              try { desc = elem.description(); } catch(e) {}
-              var id = "";
-              try { id = elem.identifier(); } catch(e) {}
+              try { title = elem.title(); } catch (e) {
+                // swallow-ok: intentional non-fatal error suppression
+              }
               var val = "";
-              try {
-                var v = elem.value();
-                if (typeof v === "string") val = v.slice(0, 150);
-              } catch(e) {}
-              var enabled = true;
-              try { enabled = elem.enabled(); } catch(e) {}
+              try { val = elem.value(); } catch (e) {
+                // swallow-ok: intentional non-fatal error suppression
+              }
+              var desc = "";
+              try { desc = elem.description(); } catch (e) {
+                // swallow-ok: intentional non-fatal error suppression
+              }
               var focused = false;
-              try { focused = elem.focused(); } catch(e) {}
-
-              // Structural and selector priority score:
-              // 1: identifier, 2: description, 3: role+title, 4: structural
-              var selectorPriority = 4;
-              if (id && id.length > 0) selectorPriority = 1;
-              else if (desc && desc.length > 0) selectorPriority = 2;
-              else if (title && title.length > 0) selectorPriority = 3;
+              try { focused = elem.focused(); } catch (e) {
+                // swallow-ok: intentional non-fatal error suppression
+              }
+              var enabled = true;
+              try { enabled = elem.enabled(); } catch (e) {
+                // swallow-ok: intentional non-fatal error suppression
+              }
 
               var record = {
                 role: role,
                 subrole: subrole,
                 title: title,
                 description: desc,
-                identifier: id,
-                value: val,
-                enabled: enabled,
                 focused: focused,
-                selectorPriority: selectorPriority,
+                enabled: enabled,
                 depth: depth,
-                parentRole: parentRole
+                parentRole: parentRole,
+                selectorPriority: (role === "AXTextArea" ? 1 : (role === "AXTextField" ? 2 : (role === "AXWebArea" && focused ? 3 : 99)))
               };
 
               // Collect text input candidates
@@ -117,19 +121,23 @@ export class AXEngine {
               for (var i = 0; i < children.length; i++) {
                 walk(children[i], depth + 1, role);
               }
-            } catch(e) {}
+            } catch (e) {
+              // swallow-ok: intentional non-fatal error suppression
+            }
           }
           walk(win, 0, "AXWindow");
         }
 
         JSON.stringify({
           running: true,
-          targetApp: "${targetApp}",
+          targetApp: ${safeApp},
           bundleId: bundleId,
           windowCount: wins.length,
           windows: wins.map(function(w, idx) {
             var t = "";
-            try { t = w.title(); } catch(e) {}
+            try { t = w.title(); } catch (e) {
+              // swallow-ok: safe fallback for non-serializable object
+            }
             return { index: idx + 1, title: t };
           }),
           inputCandidates: inputCandidates,
@@ -138,6 +146,18 @@ export class AXEngine {
         });
       }
     `;
+  }
+
+  /**
+   * Inspect complete accessibility hierarchy of target application.
+   */
+  async inspectApp(targetApp) {
+    let script;
+    try {
+      script = AXEngine.buildInspectScript(targetApp);
+    } catch (err) {
+      return { running: false, error: err.message };
+    }
 
     try {
       const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], { timeout: 6000, env: getScrubbedEnv() });
@@ -164,7 +184,9 @@ export class AXEngine {
             nativeConfirmed: true
           };
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       return null;
     };
 
@@ -303,10 +325,18 @@ export class AXEngine {
     };
   }
 
-  async _executeSubmissionScript({ targetApp, escaped, requestId }) {
-    const submissionScript = `
+  /**
+   * Pure builder for submission JXA script.
+   * Validates targetApp and safely escapes all parameters.
+   */
+  static buildSubmissionScript({ targetApp, escaped, requestId }) {
+    validateTargetApp(targetApp);
+    const safeApp = escapeJxaString(targetApp);
+    const safeRequestId = escapeJxaString(requestId);
+    const safeEscaped = typeof escaped === 'string' && escaped.startsWith('"') ? escaped : escapeJxaString(escaped);
+    return `
       var se = Application("System Events");
-      var proc = se.processes.byName("${targetApp}");
+      var proc = se.processes.byName(${safeApp});
       if (!proc.exists() || proc.windows.length === 0) {
         JSON.stringify({ ok: false, error: "WINDOW_LOST" });
       } else {
@@ -319,9 +349,13 @@ export class AXEngine {
           try {
             var role = elem.role();
             var desc = "";
-            try { desc = elem.description(); } catch(e) {}
+            try { desc = elem.description(); } catch (e) {
+              // swallow-ok: intentional non-fatal error suppression
+            }
             var title = "";
-            try { title = elem.title(); } catch(e) {}
+            try { title = elem.title(); } catch (e) {
+              // swallow-ok: intentional non-fatal error suppression
+            }
 
             if (!targetArea && (role === "AXTextArea" || role === "AXTextField")) {
               targetArea = elem;
@@ -337,18 +371,22 @@ export class AXEngine {
             for (var i = 0; i < kids.length; i++) {
               findControls(kids[i], depth + 1);
             }
-          } catch(e) {}
+          } catch (e) {
+            // swallow-ok: intentional non-fatal error suppression
+          }
         }
         findControls(win, 0);
 
         if (!targetArea) {
           JSON.stringify({ ok: false, error: "INPUT_NOT_LOCATED" });
         } else {
-          targetArea.value = ${escaped};
+          targetArea.value = ${safeEscaped};
           var assignedVal = "";
-          try { assignedVal = targetArea.value(); } catch(e) {}
+          try { assignedVal = targetArea.value(); } catch (e) {
+            // swallow-ok: safe fallback for non-serializable object
+          }
 
-          var valueChanged = (assignedVal.indexOf("${requestId}") >= 0);
+          var valueChanged = (assignedVal.indexOf(${safeRequestId}) >= 0);
           var clickedSend = false;
 
           if (sendButton) {
@@ -357,7 +395,9 @@ export class AXEngine {
                 sendButton.click();
                 clickedSend = true;
               }
-            } catch(e) {}
+            } catch (e) {
+              // swallow-ok: intentional non-fatal error suppression
+            }
           }
 
           JSON.stringify({
@@ -369,6 +409,15 @@ export class AXEngine {
         }
       }
     `;
+  }
+
+  async _executeSubmissionScript({ targetApp, escaped, requestId }) {
+    let submissionScript;
+    try {
+      submissionScript = AXEngine.buildSubmissionScript({ targetApp, escaped, requestId });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
 
     try {
       const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', submissionScript], { timeout: 6000, env: getScrubbedEnv() });

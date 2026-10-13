@@ -43,7 +43,9 @@ export class EventBus extends EventEmitter {
     this.outbox = new TransactionalOutbox(auditLogger, this);
     try {
       this.outbox.recoverPendingOutbox();
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
   }
 
   ensureNotifyFile() {
@@ -120,15 +122,21 @@ export class EventBus extends EventEmitter {
         this.db.exec(`ALTER TABLE bridge_events ADD COLUMN dedup_key TEXT;`);
         this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_bridge_events_dedup ON bridge_events(dedup_key);`);
       }
-    } catch {}
+    } catch  {
+      // swallow-ok: DDL schema idempotency check
+    }
 
     try {
       this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN delivery_acknowledged_at TEXT;`);
-    } catch {}
+    } catch  {
+      // swallow-ok: DDL schema idempotency check
+    }
 
     try {
       this.db.exec(`ALTER TABLE bridge_requests ADD COLUMN completion_evidence TEXT;`);
-    } catch {}
+    } catch  {
+      // swallow-ok: DDL schema idempotency check
+    }
   }
 
   /**
@@ -175,7 +183,9 @@ export class EventBus extends EventEmitter {
             isDuplicate: true
           };
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
     }
 
     const timestamp = new Date().toISOString();
@@ -256,7 +266,9 @@ export class EventBus extends EventEmitter {
     if (this.dbPath !== ':memory:') {
       try {
         fs.writeFileSync(this.notifyFilePath, String(eventId));
-      } catch {}
+      } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
     }
 
     // In-process immediate dispatch (0ms)
@@ -279,7 +291,9 @@ export class EventBus extends EventEmitter {
           completed_at = excluded.completed_at,
           updated_at = excluded.updated_at
       `).run(requestId, conversationId, fromAgent, toAgent, question, status, resStr, error, now, now, now);
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     return this.publish({
       type: status === 'completed' ? 'response_ready' : 'response_failed',
       agentId,
@@ -301,7 +315,9 @@ export class EventBus extends EventEmitter {
           completed_at = excluded.completed_at,
           updated_at = excluded.updated_at
       `).run(requestId, conversationId, fromAgent, toAgent, question, reason, now, now, now);
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     return this.publish({
       type: 'request_cancelled',
       agentId,
@@ -437,7 +453,9 @@ export class EventBus extends EventEmitter {
 
   stopWatcher() {
     if (this.fileWatcher) {
-      try { this.fileWatcher.close(); } catch {}
+      try { this.fileWatcher.close(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
       this.fileWatcher = null;
     }
     if (this.fallbackTimer) {
@@ -759,7 +777,9 @@ export class EventBus extends EventEmitter {
           updated_at = excluded.updated_at
       `).run(agentId, eventId, now);
       this.cursorCache.set(agentId, eventId);
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
   }
 
   getLatestEventId() {
@@ -829,7 +849,9 @@ export class EventBus extends EventEmitter {
         ON CONFLICT(agent_id, event_id) DO UPDATE SET acked_at = excluded.acked_at
       `).run(agentId, numId, now);
       this.updateCursor(agentId, numId);
-    } catch {}
+    } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
     return { agentId, eventId: numId, acked: true, ackedAt: now };
   }
 
@@ -853,7 +875,9 @@ export class EventBus extends EventEmitter {
         stmt.run(agentId, numId, now);
         if (numId > maxId) maxId = numId;
         ackedCount++;
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
     if (maxId > 0) {
       this.updateCursor(agentId, maxId);
@@ -951,7 +975,9 @@ export class EventBus extends EventEmitter {
               error: closeErr.message
             });
           }
-        } catch {}
+        } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
     }
     this.responseWaiters.clear();

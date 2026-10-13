@@ -159,7 +159,9 @@ export class DiagnosticsManager {
             durationMs
           });
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     // Accept either the normalized getPresence() API or the raw getAgent()

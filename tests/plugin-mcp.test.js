@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -29,17 +30,22 @@ test('Plugin path: agent-bridge-test MCP server actually works', async (t) => {
   // Executing it would launch whatever checkout those paths name -- not the code
   // under test -- so run the server from THIS checkout instead and assert the
   // shipped JSON separately, as data.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-mcp-'));
+  const testDb = path.join(tmpDir, 'test.sqlite');
   const client = new Client({ name: 'plugin-path-test', version: '1.0.0' }, { capabilities: {} });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(REPO, 'src', 'mcp-server.js')],
     cwd: REPO,
-    env: { ...process.env },
+    env: { ...process.env, AGENT_BRIDGE_DB_PATH: testDb },
     stderr: 'pipe'
   });
 
   await client.connect(transport);
-  t.after(async () => { try { await client.close(); } catch {} });
+  t.after(async () => {
+    try { await client.close(); } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  });
 
   await t.test('plugin tools/list is populated', async () => {
     const { tools } = await client.listTools();

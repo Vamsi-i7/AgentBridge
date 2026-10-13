@@ -208,7 +208,9 @@ export class MultiHopRouter {
             now,
             now
           );
-        } catch {}
+        } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
 
       // Wait for child task completion via eventBus
@@ -262,7 +264,9 @@ export class MultiHopRouter {
           const callerId = task ? (task.from_agent || task.creator) : 'system';
           this.mailbox.cancelTask({ taskId: childId, agentId: callerId, reason });
           count++;
-        } catch {}
+        } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
       this.childTasksByParent.delete(parentTaskId);
     }

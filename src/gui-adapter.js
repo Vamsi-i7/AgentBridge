@@ -1,8 +1,8 @@
-import { exec } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getScrubbedEnv } from './utils/scrubbed-env.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 /**
  * GUI Automation Adapter (OPTIONAL)
@@ -24,7 +24,7 @@ export class GuiAutomationAdapter {
   async checkAccessibilityPermission() {
     try {
       const script = `tell application "System Events" to get name of first process whose frontmost is true`;
-      const { stdout } = await execAsync(`osascript -e '${script}'`, { env: getScrubbedEnv() });
+      const { stdout } = await execFileAsync('osascript', ['-e', script], { env: getScrubbedEnv() });
       return {
         hasPermission: true,
         frontmostProcess: stdout.trim(),
@@ -58,7 +58,7 @@ export class GuiAutomationAdapter {
           return "chatgpt:" & chatgptRunning & ",claude:" & claudeRunning
         end tell
       `;
-      const { stdout } = await execAsync(`osascript -e '${script}'`, { env: getScrubbedEnv() });
+      const { stdout } = await execFileAsync('osascript', ['-e', script], { env: getScrubbedEnv() });
       return {
         status: 'available',
         runningInfo: stdout.trim()
@@ -73,7 +73,7 @@ export class GuiAutomationAdapter {
 
   async getClipboardContent() {
     try {
-      const { stdout } = await execAsync('pbpaste', { env: getScrubbedEnv() });
+      const { stdout } = await execFileAsync('pbpaste', [], { env: getScrubbedEnv() });
       return { success: true, text: stdout };
     } catch (err) {
       return { success: false, error: err.message };
@@ -82,7 +82,7 @@ export class GuiAutomationAdapter {
 
   async setClipboardContent(text) {
     try {
-      const proc = exec('pbcopy', { env: getScrubbedEnv() });
+      const proc = execFile('pbcopy', [], { env: getScrubbedEnv() });
       proc.stdin.write(text);
       proc.stdin.end();
       return { success: true };

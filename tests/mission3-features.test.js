@@ -110,7 +110,7 @@ test('Mission 3: ProjectController Ripgrep acceleration & JS fallback', async (t
   const subFile = path.join(tempDir, 'sample.js');
   fs.writeFileSync(subFile, 'export function findMissionThreeTarget() { return 42; }\nconst other = 100;');
 
-  const logger = new AuditLogger();
+  const logger = new AuditLogger(path.join(tempDir, 'audit.sqlite'));
   const guard = new PermissionGuard({
     ...CONFIG,
     ALLOWED_ROOTS: [tempDir, CONFIG.BRIDGE_ROOT]
@@ -146,7 +146,7 @@ test('Mission 3: ProjectController checkSyntax and extractData', async (t) => {
   fs.writeFileSync(validCsv, 'id,name,role\n1,chatgpt,orchestrator\n2,claude,coder\n3,gemini,reviewer\n');
   fs.writeFileSync(validMd, '# Project Overview\nText\n## Architecture\nMore text\n### Ripgrep Engine\nDeep details\n');
 
-  const logger = new AuditLogger();
+  const logger = new AuditLogger(path.join(tempDir, 'audit.sqlite'));
   const guard = new PermissionGuard({
     ...CONFIG,
     ALLOWED_ROOTS: [tempDir]
@@ -193,7 +193,8 @@ test('Mission 3: ProjectController checkSyntax and extractData', async (t) => {
 });
 
 test('Mission 3: GitController getSummary & getBlame', async (t) => {
-  const logger = new AuditLogger();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-mission3-git-'));
+  const logger = new AuditLogger(path.join(tmpDir, 'audit.sqlite'));
   const guard = new PermissionGuard(CONFIG);
   const git = new GitController(guard, logger);
 
@@ -209,11 +210,14 @@ test('Mission 3: GitController getSummary & getBlame', async (t) => {
   assert.ok(blame.entries.length >= 1);
   assert.ok(blame.entries[0].commit);
   assert.ok(blame.entries[0].author);
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 test('Mission 3: ToolRegistry discover_tools and tool execution', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-mission3-tool-'));
   const registry = new ToolRegistry();
-  const logger = new AuditLogger();
+  const logger = new AuditLogger(path.join(tmpDir, 'audit.sqlite'));
   const guard = new PermissionGuard(CONFIG);
   const controller = new ProjectController(guard, logger);
   const git = new GitController(guard, logger);
@@ -260,10 +264,13 @@ test('Mission 3: ToolRegistry discover_tools and tool execution', async (t) => {
   // 5. Get knowledge by ID
   const getRes = await registry.executeTool('bridge_get_knowledge', { id: storeRes.id }, context);
   assert.equal(getRes.title, 'Deterministic Recovery Invariants');
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 test('Mission 3: AutonomousCollaborationOrchestrator capability routing & single-agent bypass', async (t) => {
-  const logger = new AuditLogger();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-mission3-collab-'));
+  const logger = new AuditLogger(path.join(tmpDir, 'audit.sqlite'));
   const capRegistry = new CapabilityRegistry(logger);
 
   // Register verified capabilities
@@ -314,4 +321,6 @@ test('Mission 3: AutonomousCollaborationOrchestrator capability routing & single
   });
   assert.equal(complexDecision.collaborate, true);
   assert.equal(complexDecision.reason, 'HIGH_COMPLEXITY');
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 });

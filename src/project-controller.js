@@ -21,7 +21,9 @@ function getRipgrepPath() {
         cachedRgPath = cand;
         return cachedRgPath;
       }
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
   }
   cachedRgPath = 'rg';
   return cachedRgPath;
@@ -339,7 +341,9 @@ export class ProjectController {
                   });
                 }
               }
-            } catch {}
+            } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
           }
         }
       };
@@ -928,7 +932,9 @@ export class ProjectController {
           untrackedCount: gitStatus.untrackedCount,
           changedFiles: gitStatus.changedFiles || []
         };
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     const snapshot = {
@@ -960,7 +966,9 @@ export class ProjectController {
     const root = rootPath || this.guard.config.BRIDGE_ROOT;
     let status = { changedFiles: [] };
     if (this.git) {
-      try { status = await this.git.getStatus(root, agentId, false); } catch {}
+      try { status = await this.git.getStatus(root, agentId, false); } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
     const testDir = path.join(root, 'tests');
     const available = [];

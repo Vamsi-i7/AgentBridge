@@ -241,7 +241,9 @@ export class CliProcessAdapter extends BaseRouteAdapter {
               reportedTokensOut = parsed.usage.completion_tokens || parsed.usage.output_tokens || record.tokensOut;
             }
           }
-        } catch {}
+        } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
 
         const usage = {
           tokensIn: reportedTokensIn,
@@ -309,7 +311,9 @@ export class CliProcessAdapter extends BaseRouteAdapter {
         } catch {
           try {
             if (record.child && !record.child.killed) record.child.kill(sig);
-          } catch {}
+          } catch  {
+      // swallow-ok: process or file cleanup
+    }
         }
       };
 
@@ -318,7 +322,9 @@ export class CliProcessAdapter extends BaseRouteAdapter {
         killGroup('SIGKILL');
       }, 200).unref();
     } else if (record.child) {
-      try { record.child.kill('SIGTERM'); } catch {}
+      try { record.child.kill('SIGTERM'); } catch  {
+      // swallow-ok: process or file cleanup
+    }
     }
 
     if (record.resolve) {

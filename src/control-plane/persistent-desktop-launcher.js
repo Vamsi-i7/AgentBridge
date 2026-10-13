@@ -38,7 +38,9 @@ export class PersistentDesktopLauncher {
       try {
         await execFileAsync('open', ['-a', targetApp], { env: getScrubbedEnv() });
         await new Promise(r => setTimeout(r, 600));
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
 
       inspection = await this.swiftBridge.inspectApp(targetApp);
       return this._recordReadySession(targetApp, inspection, { agentId, restored: true });

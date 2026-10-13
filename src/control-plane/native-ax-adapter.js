@@ -208,7 +208,9 @@ export class NativeAxAdapter extends BaseRouteAdapter {
         } else if (typeof this.swiftBridge.executeOp === 'function') {
           await this.swiftBridge.executeOp({ op: 'chatgptPressButton', app: this.appName, text: 'Stop' });
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       if (typeof onError === 'function') {
         onError(new Error('CANCELLED'));
       }
@@ -383,7 +385,9 @@ export class NativeAxAdapter extends BaseRouteAdapter {
       if (typeof this.swiftBridge.pressChatGPTButton === 'function') {
         await this.swiftBridge.pressChatGPTButton('Stop');
       }
-    } catch {}
+    } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
     this.activeRequests.delete(requestId);
     return true;
   }

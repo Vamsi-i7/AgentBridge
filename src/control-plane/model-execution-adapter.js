@@ -151,13 +151,17 @@ export class ChatGptModelAdapter extends ModelExecutionAdapter {
             if (evt.type === 'item.completed' && evt.item?.type === 'agent_message') {
               response = evt.item.text || '';
             }
-          } catch {}
+          } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
         }
       });
 
       const timer = setTimeout(() => {
         job.cancelled = true;
-        try { child.kill('SIGTERM'); } catch {}
+        try { child.kill('SIGTERM'); } catch  {
+      // swallow-ok: process or file cleanup
+    }
         this.activeJobs.delete(resolvedId);
         resolve({
           success: false,
@@ -194,14 +198,18 @@ export class ChatGptModelAdapter extends ModelExecutionAdapter {
     const job = this.activeJobs.get(requestId);
     if (!job) return { cancelled: true, requestId }; // already done
     job.cancelled = true;
-    try { if (!job.child.killed) job.child.kill('SIGTERM'); } catch {}
+    try { if (!job.child.killed) job.child.kill('SIGTERM'); } catch  {
+      // swallow-ok: process or file cleanup
+    }
     this.activeJobs.delete(requestId);
     return { cancelled: true, requestId };
   }
 
   async recover() {
     for (const [, job] of this.activeJobs) {
-      try { if (!job.child.killed) job.child.kill('SIGTERM'); } catch {}
+      try { if (!job.child.killed) job.child.kill('SIGTERM'); } catch  {
+      // swallow-ok: process or file cleanup
+    }
     }
     this.activeJobs.clear();
     return { recovered: true };
@@ -248,7 +256,9 @@ export class ClaudeModelAdapter extends ModelExecutionAdapter {
         running = Boolean(res.ok && res.running);
         windowCount = res.windowCount || 0;
       }
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     return {
       healthy: running,
       running,

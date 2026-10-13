@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { AuditLogger } from '../src/audit-logger.js';
 import { TaskManager } from '../src/task-manager.js';
 import { AttemptLedger, AttemptState } from '../src/attempts/attempt-ledger.js';
@@ -12,8 +13,11 @@ import { PermissionGuard } from '../src/permission-guard.js';
 import { CONFIG } from '../src/config.js';
 
 test('Effects Boundary & Invariants Suite: Authoritative ToolRegistry Enforcement', async (t) => {
-  const tmpDir = path.join(process.cwd(), 'tmp-effects-test-' + Date.now());
+  const tmpDir = path.join(os.tmpdir(), 'tmp-effects-test-' + Date.now());
   fs.mkdirSync(tmpDir, { recursive: true });
+  t.after(() => {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  });
   const dbPath = path.join(tmpDir, 'test.sqlite');
   const logger = new AuditLogger(dbPath);
   const attemptLedger = new AttemptLedger(logger);

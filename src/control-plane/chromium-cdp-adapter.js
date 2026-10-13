@@ -137,7 +137,9 @@ export class ChromiumCdpAdapter extends BaseRouteAdapter {
                 try {
                   Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
                   Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
-                } catch(e) {}
+                } catch (e) {
+      // swallow-ok: intentional non-fatal error suppression
+    }
               `
             });
             resolve(true);
@@ -372,7 +374,9 @@ export class ChromiumCdpAdapter extends BaseRouteAdapter {
           streamState.accumulatedText = currentText;
           onChunk(delta);
         }
-      } catch {} finally {
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    } finally {
         isPolling = false;
       }
     }, 150);
@@ -410,7 +414,9 @@ export class ChromiumCdpAdapter extends BaseRouteAdapter {
           `
         });
       }
-    } catch {}
+    } catch  {
+      // swallow-ok: safe fallback for non-serializable object
+    }
 
     return true;
   }
@@ -424,7 +430,9 @@ export class ChromiumCdpAdapter extends BaseRouteAdapter {
     this.activeStreams.clear();
     this.pendingRpc.clear();
     if (this.ws) {
-      try { this.ws.close(); } catch {}
+      try { this.ws.close(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
       this.ws = null;
     }
   }

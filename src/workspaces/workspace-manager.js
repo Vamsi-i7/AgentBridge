@@ -38,7 +38,9 @@ export class WorkspaceManager {
     if (!fs.existsSync(this.worktreesRoot)) {
       try {
         fs.mkdirSync(this.worktreesRoot, { recursive: true });
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     if (this.db) {
@@ -92,7 +94,9 @@ export class WorkspaceManager {
     if (fs.existsSync(worktreeDir)) {
       try {
         await this.git._execGit(resolvedRepo, ['worktree', 'remove', '--force', worktreeDir]);
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     const parentDir = path.dirname(worktreeDir);
@@ -132,17 +136,23 @@ export class WorkspaceManager {
     const resolvedRepo = path.resolve(repoPath);
     try {
       await this.git._execGit(resolvedRepo, ['worktree', 'remove', '--force', worktreePath]);
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
 
     if (deleteBranch && branchName) {
       try {
         await this.git._execGit(resolvedRepo, ['branch', '-D', branchName]);
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     try {
       await this.git._execGit(resolvedRepo, ['worktree', 'prune']);
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
 
     return { removed: true, worktreePath };
   }

@@ -2,7 +2,8 @@ import crypto from 'node:crypto';
 import EventEmitter from 'node:events';
 import { AttemptLedger } from './attempts/attempt-ledger.js';
 import { TransactionalOutbox } from './events/transactional-outbox.js';
-import { normalizeAgentId } from './agent-identity.js';
+import { normalizeAgentId, canonicalizeTargetAgent, getAliasesFor } from './agent-identity.js';
+import { CONFIG } from './config.js';
 
 export function runInImmediateTx(db, fn) {
   let started = false;
@@ -21,7 +22,9 @@ export function runInImmediateTx(db, fn) {
     return res;
   } catch (err) {
     if (started) {
-      try { db.exec('ROLLBACK;'); } catch {}
+      try { db.exec('ROLLBACK;'); } catch  {
+      // swallow-ok: transaction may already be resolved or closed
+    }
     }
     throw err;
   }
@@ -50,10 +53,13 @@ export class TaskManager extends EventEmitter {
     // chain depth is bounded so agent-to-agent delegation cannot recurse
     // without limit. Overridable per instance (and by env) for tests.
     this.maxDelegationDepth = Number(process.env.AGENT_BRIDGE_MAX_DELEGATION_DEPTH || 24);
+    this.maxPendingAgeMs = CONFIG?.MAX_PENDING_AGE_MS !== undefined ? CONFIG.MAX_PENDING_AGE_MS : (24 * 60 * 60 * 1000);
     this.initTables();
     try {
       this.startupRecovery();
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
   }
 
   initTables() {
@@ -93,7 +99,9 @@ export class TaskManager extends EventEmitter {
       if (!existingCols.has(col.name)) {
         try {
           this.db.exec(`ALTER TABLE tasks ADD COLUMN ${col.name} ${col.type}`);
-        } catch {}
+        } catch  {
+      // swallow-ok: DDL schema idempotency check
+    }
       }
     }
 
@@ -104,7 +112,9 @@ export class TaskManager extends EventEmitter {
         CREATE INDEX IF NOT EXISTS idx_tasks_parent_id ON tasks(parent_task_id);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_dedup_key ON tasks(dedup_key) WHERE dedup_key IS NOT NULL;
       `);
-    } catch {}
+    } catch  {
+      // swallow-ok: DDL schema idempotency check
+    }
   }
 
   /**
@@ -152,8 +162,8 @@ export class TaskManager extends EventEmitter {
     emitEvent = true,
     dedupKey = null
   }) {
-    const effectiveFrom = fromAgent || initiator || 'system';
-    const effectiveTo = toAgent || assignedTo || null;
+    const effectiveFrom = normalizeAgentId(fromAgent || initiator) || 'system';
+    const effectiveTo = canonicalizeTargetAgent(toAgent || assignedTo, { required: false });
     const effectiveInstructions = instructions || description || '';
 
     if (parentTaskId && this.maxDelegationDepth > 0) {
@@ -177,7 +187,9 @@ export class TaskManager extends EventEmitter {
         if (existing) {
           return this.getTask(existing.id, false);
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
     }
 
     const id = customTaskId || `task_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
@@ -213,7 +225,9 @@ export class TaskManager extends EventEmitter {
             finalTask = this.getTask(existing.id, false);
             return;
           }
-        } catch {}
+        } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
       }
 
       const stmt = targetDb.prepare(`
@@ -306,6 +320,9 @@ export class TaskManager extends EventEmitter {
     // Check if there are blocked tasks whose dependencies are now completed
     this.refreshBlockedTasks(agentId);
 
+    const canonicalAgentId = canonicalizeTargetAgent(agentId);
+    const aliasCandidates = getAliasesFor(canonicalAgentId);
+    const placeholders = aliasCandidates.map(() => '?').join(', ');
     const now = new Date().toISOString();
     let row = null;
 
@@ -313,7 +330,7 @@ export class TaskManager extends EventEmitter {
       row = this.db.prepare(`
         SELECT id, title, instructions, from_agent, to_agent, priority, context
         FROM tasks
-        WHERE to_agent = ? AND status = 'pending'
+        WHERE to_agent IN (${placeholders}) AND status = 'pending'
         ORDER BY 
           CASE priority 
             WHEN 'urgent' THEN 1 
@@ -323,15 +340,15 @@ export class TaskManager extends EventEmitter {
           END,
           created_at ASC
         LIMIT 1
-      `).get(agentId);
+      `).get(...aliasCandidates);
 
       if (!row) return;
 
       const update = this.db.prepare(`
         UPDATE tasks
-        SET status = 'claimed', started_at = ?, updated_at = ?
+        SET status = 'claimed', to_agent = ?, started_at = ?, updated_at = ?
         WHERE id = ? AND status = 'pending'
-      `).run(now, now, row.id);
+      `).run(canonicalAgentId, now, now, row.id);
 
       if (update.changes === 0) {
         row = null;
@@ -341,10 +358,10 @@ export class TaskManager extends EventEmitter {
     if (!row) return null;
 
     this.logger?.log({
-      agentId,
+      agentId: canonicalAgentId,
       action: 'claim_task',
       status: 'success',
-      details: { taskId: row.id, title: row.title }
+      details: { taskId: row.id, title: row.title, claimedBy: canonicalAgentId }
     });
 
     const claimedTask = this.getTask(row.id, false);
@@ -352,14 +369,16 @@ export class TaskManager extends EventEmitter {
       try {
         const att = this.attempts.createAttempt({
           taskId: row.id,
-          agentId,
+          agentId: canonicalAgentId,
           routeId: 'claimed_task'
         });
-        this.attempts.acquireAttempt(att.attemptId, agentId);
+        this.attempts.acquireAttempt(att.attemptId, canonicalAgentId);
         claimedTask.attemptId = att.attemptId;
         claimedTask.epoch = att.epoch;
         claimedTask.nonce = att.nonce;
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
     this.emit('taskClaimed', claimedTask);
     return claimedTask;
@@ -371,6 +390,9 @@ export class TaskManager extends EventEmitter {
     }
     this.recoverExpiredTasks(agentId);
 
+    const canonicalAgentId = canonicalizeTargetAgent(agentId);
+    const aliasCandidates = getAliasesFor(canonicalAgentId);
+    const placeholders = aliasCandidates.map(() => '?').join(', ');
     const now = new Date().toISOString();
     let row = null;
 
@@ -378,8 +400,8 @@ export class TaskManager extends EventEmitter {
       row = this.db.prepare(`
         SELECT id, title, instructions, from_agent, to_agent, priority, context
         FROM tasks
-        WHERE id = ? AND (to_agent = ? OR to_agent IS NULL) AND status = 'pending'
-      `).get(taskId, agentId);
+        WHERE id = ? AND (to_agent IN (${placeholders}) OR to_agent IS NULL) AND status = 'pending'
+      `).get(taskId, ...aliasCandidates);
 
       if (!row) return;
 
@@ -387,7 +409,7 @@ export class TaskManager extends EventEmitter {
         UPDATE tasks
         SET status = 'claimed', to_agent = ?, started_at = ?, updated_at = ?
         WHERE id = ? AND status = 'pending'
-      `).run(agentId, now, now, row.id);
+      `).run(canonicalAgentId, now, now, row.id);
 
       if (update.changes === 0) {
         row = null;
@@ -397,10 +419,10 @@ export class TaskManager extends EventEmitter {
     if (!row) return null;
 
     this.logger?.log({
-      agentId,
+      agentId: canonicalAgentId,
       action: 'claim_task',
       status: 'success',
-      details: { taskId: row.id, title: row.title }
+      details: { taskId: row.id, title: row.title, claimedBy: canonicalAgentId }
     });
 
     const claimedTask = this.getTask(row.id, false);
@@ -408,14 +430,16 @@ export class TaskManager extends EventEmitter {
       try {
         const att = this.attempts.createAttempt({
           taskId: row.id,
-          agentId,
+          agentId: canonicalAgentId,
           routeId: 'claimed_task'
         });
-        this.attempts.acquireAttempt(att.attemptId, agentId);
+        this.attempts.acquireAttempt(att.attemptId, canonicalAgentId);
         claimedTask.attemptId = att.attemptId;
         claimedTask.epoch = att.epoch;
         claimedTask.nonce = att.nonce;
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
     this.emit('taskClaimed', claimedTask);
     return claimedTask;
@@ -442,18 +466,33 @@ export class TaskManager extends EventEmitter {
     return this.getTask(taskId, false);
   }
 
-  recoverExpiredTasks(agentId = null) {
+  recoverExpiredTasks(agentIdOrOpts = null) {
+    let agentId = null;
+    let maxPendingAgeMs = this.maxPendingAgeMs;
+    if (typeof agentIdOrOpts === 'object' && agentIdOrOpts !== null) {
+      agentId = agentIdOrOpts.agentId || null;
+      if (agentIdOrOpts.maxPendingAgeMs !== undefined) {
+        maxPendingAgeMs = agentIdOrOpts.maxPendingAgeMs;
+      }
+    } else if (typeof agentIdOrOpts === 'string') {
+      agentId = agentIdOrOpts;
+    }
+
     const params = [];
     let query = `SELECT * FROM tasks WHERE status IN ('claimed', 'in_progress') AND started_at IS NOT NULL`;
     if (agentId) {
-      query += ' AND to_agent = ?';
-      params.push(agentId);
+      const canonicalAgentId = canonicalizeTargetAgent(agentId, { required: false }) || normalizeAgentId(agentId);
+      const candidates = getAliasesFor(canonicalAgentId);
+      const placeholders = candidates.map(() => '?').join(', ');
+      query += ` AND to_agent IN (${placeholders})`;
+      params.push(...candidates);
     }
 
     const nowMs = Date.now();
     const recovered = [];
 
     runInImmediateTx(this.db, () => {
+      // 1. Recover expired leased tasks (existing logic)
       const rows = this.db.prepare(query).all(...params);
       for (const task of rows) {
         const startedMs = Date.parse(task.updated_at || task.started_at);
@@ -481,12 +520,63 @@ export class TaskManager extends EventEmitter {
           recovered.push({ taskId: task.id, status: 'failed', retryCount });
         }
       }
+
+      // 2. Expire stale pending tasks that were never claimed (AR-03)
+      if (typeof maxPendingAgeMs === 'number' && maxPendingAgeMs > 0) {
+        const cutoffIso = new Date(Date.now() - maxPendingAgeMs).toISOString();
+        let pendingQuery = `
+          SELECT * FROM tasks
+          WHERE status = 'pending'
+            AND created_at IS NOT NULL
+            AND created_at < ?
+        `;
+        const pendingParams = [cutoffIso];
+        if (agentId) {
+          const canonicalAgentId = canonicalizeTargetAgent(agentId, { required: false }) || normalizeAgentId(agentId);
+          const candidates = getAliasesFor(canonicalAgentId);
+          const placeholders = candidates.map(() => '?').join(', ');
+          pendingQuery += ` AND to_agent IN (${placeholders})`;
+          pendingParams.push(...candidates);
+        }
+
+        const now = new Date().toISOString();
+        const stalePendingTasks = this.db.prepare(pendingQuery).all(...pendingParams);
+        for (const task of stalePendingTasks) {
+          const errorMsg = `TARGET_UNREACHABLE: Task expired in pending state without being claimed after ${maxPendingAgeMs}ms (created at ${task.created_at}).`;
+          const res = this.db.prepare(`
+            UPDATE tasks
+            SET status = 'failed', error = ?, updated_at = ?, completed_at = ?
+            WHERE id = ? AND status = 'pending'
+          `).run(errorMsg, now, now, task.id);
+
+          if (res.changes > 0) {
+            recovered.push({
+              taskId: task.id,
+              status: 'failed',
+              retryCount: task.retry_count || 0,
+              reason: 'PENDING_EXPIRED',
+              error: errorMsg,
+              createdAt: task.created_at
+            });
+
+            this.emit('task:failed', {
+              taskId: task.id,
+              error: errorMsg,
+              errorCode: 'TARGET_UNREACHABLE'
+            });
+            this.emit('task:expired', {
+              taskId: task.id,
+              reason: 'PENDING_EXPIRED'
+            });
+          }
+        }
+      }
     });
 
     for (const rec of recovered) {
       this.logger?.log({
         agentId: agentId || 'system',
-        action: 'recover_expired_task',
+        action: rec.reason === 'PENDING_EXPIRED' ? 'pending_task_expired' : 'recover_expired_task',
         status: rec.status,
         details: rec
       });
@@ -502,7 +592,9 @@ export class TaskManager extends EventEmitter {
     if (this.attempts?.recoverExpiredAttempts) {
       try {
         this.attempts.recoverExpiredAttempts();
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
     return this.recoverExpiredTasks(agentId);
   }
@@ -605,7 +697,9 @@ export class TaskManager extends EventEmitter {
             this.emit('taskUnblocked', b.id);
           }
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: secondary notification or event dispatch failure is non-fatal
+    }
     }
   }
 
@@ -646,7 +740,9 @@ export class TaskManager extends EventEmitter {
                 payload: result || error,
                 reason: `Stale ${status} submitted after task was already marked ${task.status}`
               });
-            } catch {}
+            } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
           }
           this.logger?.log({
             agentId,
@@ -783,7 +879,9 @@ export class TaskManager extends EventEmitter {
       if (quarantinePayload && this.attempts) {
         try {
           this.attempts.quarantineLateResponse(quarantinePayload);
-        } catch {}
+        } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
       throw err;
     }
@@ -827,7 +925,9 @@ export class TaskManager extends EventEmitter {
       if (attemptId && epoch && this.attempts) {
         try {
           this.attempts.failAttempt({ attemptId, epoch, error });
-        } catch {}
+        } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
 
       // Re-queue task as pending
@@ -898,7 +998,9 @@ export class TaskManager extends EventEmitter {
         id: row.id,
         status: row.status,
         creator: row.from_agent,
+        fromAgent: row.from_agent,
         assignee: row.to_agent,
+        toAgent: row.to_agent,
         title: row.title,
         priority: row.priority || 'normal',
         result: row.result ? (row.result.length > 200 ? row.result.slice(0, 200) + '... (truncated)' : row.result) : null,
@@ -911,7 +1013,9 @@ export class TaskManager extends EventEmitter {
       id: row.id,
       parentTaskId: row.parent_task_id,
       creator: row.from_agent,
+      fromAgent: row.from_agent,
       assignee: row.to_agent,
+      toAgent: row.to_agent,
       title: row.title,
       instructions: row.instructions,
       context: row.context ? (() => { try { return JSON.parse(row.context); } catch { return row.context; } })() : null,

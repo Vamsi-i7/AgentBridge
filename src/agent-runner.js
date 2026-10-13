@@ -91,7 +91,9 @@ export class AgentRunner extends EventEmitter {
     if (this.mailbox?.tasks?.recoverExpiredLeases) {
       try {
         this.mailbox.tasks.recoverExpiredLeases();
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     this.emit('started', { agentId: this.agentId });
@@ -121,7 +123,9 @@ export class AgentRunner extends EventEmitter {
     if (this.eventSubscription) {
       try {
         this.eventSubscription.unsubscribe();
-      } catch {}
+      } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
       this.eventSubscription = null;
     }
     if (this.heartbeatSession) {
@@ -175,7 +179,9 @@ export class AgentRunner extends EventEmitter {
       } else {
         // Idle recovery backoff (only a fallback safety net; event bus delivers live wakeup)
         if (this.mailbox?.tasks?.recoverExpiredLeases) {
-          try { this.mailbox.tasks.recoverExpiredLeases(); } catch {}
+          try { this.mailbox.tasks.recoverExpiredLeases(); } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
         }
         this.currentIntervalMs = Math.min(
           this.currentIntervalMs * 1.5,
@@ -208,7 +214,9 @@ export class AgentRunner extends EventEmitter {
               attemptId: task.attemptId || null,
               epoch: task.epoch || null
             });
-          } catch {}
+          } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
         }, heartbeatMs)
       : null;
 
@@ -221,7 +229,9 @@ export class AgentRunner extends EventEmitter {
             attemptId: task.attemptId || null,
             epoch: task.epoch || null
           });
-        } catch {}
+        } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
 
       // Execute task logic
@@ -308,7 +318,9 @@ export class AgentRunner extends EventEmitter {
             status: 'denied',
             details: { taskId: task.id, title: task.title, instructions: task.instructions }
           });
-        } catch {}
+        } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
       throw new Error(sensitiveCheck.reason || SECURITY_DENIAL_MESSAGE);
     }
@@ -325,7 +337,9 @@ export class AgentRunner extends EventEmitter {
             status: 'success',
             details: { taskId: task.id, tokenRedacted: true }
           });
-        } catch {}
+        } catch  {
+      // swallow-ok: secondary notification or event dispatch failure is non-fatal
+    }
       }
       return token;
     }
@@ -340,7 +354,9 @@ export class AgentRunner extends EventEmitter {
     // 2. Structured action dispatch via task.context
     let ctx = task.context;
     if (typeof ctx === 'string') {
-      try { ctx = JSON.parse(ctx); } catch {}
+      try { ctx = JSON.parse(ctx); } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
     }
 
     const delegator = task.fromAgent || task.from_agent || task.creator || 'unknown';

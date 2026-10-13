@@ -86,7 +86,9 @@ export class BridgeMcpServer {
     let gitHead = 'unknown';
     try {
       gitHead = execSync('git rev-parse HEAD', { cwd: CONFIG.BRIDGE_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: getScrubbedEnv() }).trim();
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     this.diagnostics.setStartupStamp({
       gitHead,
       toolCount: this.registry.getToolDefinitions(defaultRegistryProfile).length,
@@ -242,26 +244,38 @@ export class BridgeMcpServer {
   async notifyToolsListChanged() {
     try {
       await this.server.sendToolListChanged();
-    } catch {}
+    } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
     if (this.httpServer && typeof this.httpServer.broadcastToolListChanged === 'function') {
       try {
         this.httpServer.broadcastToolListChanged();
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
   }
 
   async close() {
     if (this.presenceSession && typeof this.presenceSession.stop === 'function') {
-      try { this.presenceSession.stop(); } catch {}
+      try { this.presenceSession.stop(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
     }
     if (this.sessionAdapter && typeof this.sessionAdapter.close === 'function') {
-      try { await this.sessionAdapter.close(); } catch {}
+      try { await this.sessionAdapter.close(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
     }
     if (this.eventBus && typeof this.eventBus.close === 'function') {
-      try { this.eventBus.close(); } catch {}
+      try { this.eventBus.close(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
     }
     if (this.logger && typeof this.logger.close === 'function') {
-      try { this.logger.close(); } catch {}
+      try { this.logger.close(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
     }
   }
 }

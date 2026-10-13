@@ -4,6 +4,7 @@ import { sendDesktopNotification, activateDesktopApp } from './desktop-notifier.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getScrubbedEnv } from '../utils/scrubbed-env.js';
+import { validateTargetApp, escapeJxaString } from '../utils/jxa-sanitizer.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -223,15 +224,17 @@ export class DesktopUIAdapter extends AgentSessionAdapter {
     };
   }
 
-  async _executeAutomation({ text, requestId, verification, activateApp }) {
-    if (activateApp) {
-      await activateDesktopApp(this.targetApp);
-    }
-
-    const taggedMessage = requestId ? `[Agent Bridge ${requestId}]\n${text}` : text;
-    const jxaInsertScript = `
+  /**
+   * Pure builder for UI insert script.
+   * Validates targetApp and safely escapes all parameters.
+   */
+  static buildInsertScript(targetApp, taggedMessage) {
+    validateTargetApp(targetApp);
+    const safeApp = escapeJxaString(targetApp);
+    const safeMessage = escapeJxaString(taggedMessage);
+    return `
       const se = Application("System Events");
-      const procs = se.applicationProcesses.whose({name: "${this.targetApp}"});
+      const procs = se.applicationProcesses.whose({name: ${safeApp}});
       if (procs.length === 0) {
         JSON.stringify({ ok: false, error: "process_not_found" });
       } else {
@@ -252,13 +255,15 @@ export class DesktopUIAdapter extends AgentSessionAdapter {
               for (let k = 0; k < kids.length; k++) {
                 findTextArea(kids[k], depth + 1);
               }
-            } catch {}
+            } catch  {
+              // swallow-ok: intentional non-fatal error suppression
+            }
           }
           findTextArea(wins[0], 0);
 
           if (target) {
             try {
-              target.value = ${JSON.stringify(taggedMessage)};
+              target.value = ${safeMessage};
               JSON.stringify({ ok: true, located: true });
             } catch (e) {
               JSON.stringify({ ok: false, error: e.message });
@@ -269,6 +274,20 @@ export class DesktopUIAdapter extends AgentSessionAdapter {
         }
       }
     `;
+  }
+
+  async _executeAutomation({ text, requestId, verification, activateApp }) {
+    if (activateApp) {
+      await activateDesktopApp(this.targetApp);
+    }
+
+    const taggedMessage = requestId ? `[Agent Bridge ${requestId}]\n${text}` : text;
+    let jxaInsertScript;
+    try {
+      jxaInsertScript = DesktopUIAdapter.buildInsertScript(this.targetApp, taggedMessage);
+    } catch (err) {
+      return { submitted: false, error: err.message };
+    }
 
     try {
       const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', jxaInsertScript], { timeout: 5000, env: getScrubbedEnv() });

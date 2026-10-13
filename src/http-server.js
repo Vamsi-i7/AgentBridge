@@ -18,6 +18,7 @@ import { EffectsLedger, isEffectfulTool } from './effects/effects-ledger.js';
 import { AttemptLedger } from './attempts/attempt-ledger.js';
 import { ArtifactStore } from './artifacts/artifact-store.js';
 import { A2AAdapter } from './interop/a2a-adapter.js';
+import { getBuildInfo } from './utils/build-info.js';
 
 export class BridgeHttpServer {
   constructor(options = {}) {
@@ -50,7 +51,9 @@ export class BridgeHttpServer {
       let gitHead = 'unknown';
       try {
         gitHead = execSync('git rev-parse HEAD', { cwd: CONFIG.BRIDGE_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: getScrubbedEnv() }).trim();
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       this.diagnostics.setStartupStamp({
         gitHead,
         toolCount: this.registry.getToolDefinitions().length,
@@ -303,12 +306,15 @@ export class BridgeHttpServer {
 
         if (pathname === '/health' && method === 'GET') {
           const auth = this.resolveAuth(req);
+          const buildInfo = getBuildInfo();
           res.writeHead(200, { 'Content-Type': 'application/json' });
           if (auth && auth.authorized && !auth.unauthenticatedLocal) {
             return res.end(JSON.stringify({
               status: 'healthy',
               service: 'agent-bridge',
+              auth: this.apiKey ? 'api-key' : 'none-loopback',
               authEnabled: Boolean(this.apiKey),
+              buildId: buildInfo.buildId,
               ziaWriteLocked: this.guard?.config?.ZIA_WRITE_LOCKED ?? CONFIG.ZIA_WRITE_LOCKED,
               allowedRoots: this.guard?.config?.ALLOWED_ROOTS ?? CONFIG.ALLOWED_ROOTS,
               activeAgents: this.guard?.config?.AGENT_IDENTITIES ?? CONFIG.AGENT_IDENTITIES,
@@ -320,7 +326,9 @@ export class BridgeHttpServer {
           return res.end(JSON.stringify({
             status: 'healthy',
             service: 'agent-bridge',
-            authEnabled: Boolean(this.apiKey)
+            auth: this.apiKey ? 'api-key' : 'none-loopback',
+            authEnabled: Boolean(this.apiKey),
+            buildId: buildInfo.buildId
           }));
         }
 
@@ -600,7 +608,9 @@ export class BridgeHttpServer {
                       })}\n\n`);
                       return res.end();
                     }
-                  } catch {}
+                  } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
                 }
                 res.write(`data: ${JSON.stringify({
                   done: true,
@@ -647,7 +657,9 @@ export class BridgeHttpServer {
                       status: 'completed'
                     }));
                   }
-                } catch {}
+                } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
               }
               res.writeHead(502, { 'Content-Type': 'application/json' });
               return res.end(JSON.stringify({
@@ -767,7 +779,9 @@ export class BridgeHttpServer {
             if (sessionId && this.sseClients.has(sessionId)) {
               const client = this.sseClients.get(sessionId);
               if (client.keepAliveTimer) clearInterval(client.keepAliveTimer);
-              try { client.res.end(); } catch {}
+              try { client.res.end(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
               this.sseClients.delete(sessionId);
               res.writeHead(204);
               return res.end();
@@ -805,7 +819,9 @@ export class BridgeHttpServer {
                 try {
                   const client = this.sseClients.get(sessionId);
                   client.res.write(`event: message\ndata: ${JSON.stringify(payload)}\n\n`);
-                } catch {}
+                } catch  {
+      // swallow-ok: safe fallback for non-serializable object
+    }
                 res.writeHead(202, { 'Content-Type': 'text/plain' });
                 return res.end('Accepted');
               }
@@ -970,6 +986,9 @@ export class BridgeHttpServer {
         if (addr && typeof addr === 'object' && addr.port) {
           this.port = addr.port;
         }
+        if (!this.apiKey && !this.requireApiKey) {
+          console.warn('[SECURITY WARNING] Agent Bridge HTTP control plane is listening on loopback without an API key (auth: "none-loopback"). Local processes can access unauthenticated endpoints. To secure the control plane, set CONTROL_PLANE_API_KEY or configure requireApiKey: true.');
+        }
         resolve({ host: this.host, port: this.port });
       });
 
@@ -986,7 +1005,9 @@ export class BridgeHttpServer {
     for (const [sessionId, client] of this.sseClients.entries()) {
       try {
         client.res.write(`event: message\ndata: ${JSON.stringify(notification)}\n\n`);
-      } catch {}
+      } catch  {
+      // swallow-ok: safe fallback for non-serializable object
+    }
     }
   }
 
@@ -994,15 +1015,21 @@ export class BridgeHttpServer {
     return new Promise((resolve) => {
       for (const [sessionId, client] of this.sseClients.entries()) {
         if (client.keepAliveTimer) clearInterval(client.keepAliveTimer);
-        try { client.res.end(); } catch {}
+        try { client.res.end(); } catch  {
+      // swallow-ok: safe fallback for non-serializable object
+    }
       }
       this.sseClients.clear();
       if (this.backgroundGPT && typeof this.backgroundGPT.close === 'function') {
-        try { this.backgroundGPT.close(); } catch {}
+        try { this.backgroundGPT.close(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
         this.backgroundGPT = null;
       }
       if (this.localEngine && typeof this.localEngine.close === 'function') {
-        try { this.localEngine.close(); } catch {}
+        try { this.localEngine.close(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
         this.localEngine = null;
       }
       if (this.server) {
@@ -1010,7 +1037,9 @@ export class BridgeHttpServer {
           if (typeof this.server.closeAllConnections === 'function') {
             this.server.closeAllConnections();
           }
-        } catch {}
+        } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
         this.server.close(() => {
           resolve();
         });

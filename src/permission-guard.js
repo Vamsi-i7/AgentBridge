@@ -273,13 +273,17 @@ export class PermissionGuard {
     let realZiaRoot = ziaRoot;
     try {
       realZiaRoot = fs.realpathSync(ziaRoot);
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
 
     const resolved = path.resolve(targetPath);
     let realResolved = resolved;
     try {
       realResolved = this.resolveRealPath(resolved);
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
 
     const matchesRoot = (p, root) => p === root || p.startsWith(root + path.sep);
     return matchesRoot(resolved, ziaRoot) ||

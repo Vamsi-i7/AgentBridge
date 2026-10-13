@@ -5,11 +5,20 @@ import fs from 'node:fs';
 import { SignedSkillRegistry, SkillSecurityError, CATALOG_DEFAULT_TOKEN_CEILING } from '../src/skills/skill-registry.js';
 import { SkillsManager } from '../src/skills/skills-manager.js';
 import { HonestTokenizer } from '../src/tokenizer/honest-tokenizer.js';
+import { createHermeticSkillsEnv } from './helpers/hermetic.js';
 
 test('Mission G: Signed, Lazy-Loaded, Default-Deny Skill Registry Suite [TEST-PROVEN]', async (t) => {
-  const testSkillsRoot = path.join(process.cwd(), '.agents', 'skills');
-  const skillsManager = new SkillsManager({ skillsRoot: testSkillsRoot });
+  const hermeticSkills = createHermeticSkillsEnv({ copyInhouse: true });
+  const testSkillsRoot = hermeticSkills.skillsRoot;
+  const skillsManager = new SkillsManager({
+    skillsRoot: hermeticSkills.skillsRoot,
+    lockfilePath: hermeticSkills.lockfilePath
+  });
   const registry = new SignedSkillRegistry({ skillsManager });
+
+  t.after(() => {
+    hermeticSkills.cleanup();
+  });
 
   // 1. Catalog budget and profile scoping
   await t.test('1. Catalog enforces <= 200 token budget and one-line descriptions <= 20 tokens', () => {

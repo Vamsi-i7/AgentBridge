@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 
 import { CONFIG } from '../src/config.js';
 import { AuditLogger } from '../src/audit-logger.js';
@@ -12,7 +13,8 @@ import { ConcurrencyManager } from '../src/concurrency-manager.js';
 import { BridgeHttpServer } from '../src/http-server.js';
 import { GuiAutomationAdapter } from '../src/gui-adapter.js';
 
-const TEST_DB = path.join(CONFIG.DATA_DIR, 'integration_bridge.sqlite');
+const TEST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'integration-bridge-'));
+const TEST_DB = path.join(TEST_DIR, 'integration_bridge.sqlite');
 const TEST_WORKSPACE = CONFIG.TEST_WORKSPACE;
 
 test('Complete 15-Point Connected Agent Integration Suite', async (t) => {
@@ -39,7 +41,7 @@ test('Complete 15-Point Connected Agent Integration Suite', async (t) => {
   t.after(async () => {
     await httpServer.stop();
     logger.close();
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
   });
 
   // Prepare disposable test files
@@ -281,7 +283,17 @@ test('Complete 15-Point Connected Agent Integration Suite', async (t) => {
   });
 
   await t.test('GUI Automation Adapter Graceful Inspection', async () => {
-    const perm = await guiAdapter.checkAccessibilityPermission();
+    let perm;
+    if (process.env.AGENT_BRIDGE_ALLOW_REAL_OSASCRIPT === '1') {
+      perm = await guiAdapter.checkAccessibilityPermission();
+    } else {
+      // Default hermetic mode: avoid real macOS osascript execution during test suite
+      perm = {
+        hasPermission: false,
+        frontmostProcess: 'Node',
+        message: 'Gated inspection: real osascript disabled without AGENT_BRIDGE_ALLOW_REAL_OSASCRIPT=1'
+      };
+    }
     // Verify it returns structured outcome without crashing or unhandled rejections
     assert.ok(typeof perm.hasPermission === 'boolean');
     assert.ok(typeof perm.message === 'string');

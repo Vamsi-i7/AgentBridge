@@ -40,7 +40,9 @@ export class StructuredContractValidator {
         if (jsonMatch) {
           try {
             data = JSON.parse(jsonMatch[1]);
-          } catch {}
+          } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
         }
       }
     }

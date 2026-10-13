@@ -38,7 +38,9 @@ export class CdpDesktopAdapter extends DesktopControlAdapter {
           }
         }
       }
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
 
     if (process.env.CLAUDE_CDP_PORT) {
       this.port = parseInt(process.env.CLAUDE_CDP_PORT, 10);
@@ -53,7 +55,9 @@ export class CdpDesktopAdapter extends DesktopControlAdapter {
           this.port = p;
           return { discovered: true, port: p, source: 'lsof_scan' };
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     return { discovered: false, port: this.port, source: 'default' };

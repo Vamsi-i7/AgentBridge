@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { canonicalizeTargetAgent } from '../agent-identity.js';
 
 /**
  * A2AAdapter provides an optional interoperability layer implementing the
@@ -131,6 +132,8 @@ export class A2AAdapter {
     if (!params.targetAgent) throw new Error('Missing targetAgent parameter');
     if (!params.prompt && !params.payload) throw new Error('Missing task payload');
 
+    const canonicalTarget = canonicalizeTargetAgent(params.targetAgent, { required: true });
+
     // Generate V2 correlation headers and nonce
     const correlationId = authContext.correlationId || `a2a_corr_${crypto.randomBytes(8).toString('hex')}`;
     const nonce = authContext.nonce || `nonce_${crypto.randomBytes(12).toString('hex')}`;
@@ -139,7 +142,7 @@ export class A2AAdapter {
     if (this.taskManager) {
       const task = await this.taskManager.delegateTask({
         fromAgent: callerId,
-        toAgent: params.targetAgent,
+        toAgent: canonicalTarget,
         prompt: params.prompt || params.payload,
         correlationId,
         nonce,
@@ -151,7 +154,7 @@ export class A2AAdapter {
         status: 'SUBMITTED',
         correlationId,
         nonce,
-        targetAgent: params.targetAgent,
+        targetAgent: canonicalTarget,
         createdAt: new Date().toISOString()
       };
     }
@@ -162,7 +165,7 @@ export class A2AAdapter {
       status: 'SUBMITTED',
       correlationId,
       nonce,
-      targetAgent: params.targetAgent,
+      targetAgent: canonicalTarget,
       createdAt: new Date().toISOString()
     };
   }

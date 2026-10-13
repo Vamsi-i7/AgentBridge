@@ -159,7 +159,9 @@ export class ChatGptLocalEngineAdapter extends DesktopControlAdapter {
         try {
           if (job.killGroup) job.killGroup('SIGKILL');
           else if (job.child && !job.child.killed) job.child.kill('SIGKILL');
-        } catch {}
+        } catch  {
+      // swallow-ok: process or file cleanup
+    }
       }, 500).unref();
     } catch (err) {
       return { cancelled: false, error: err.message, requestId };
@@ -230,7 +232,9 @@ export class ChatGptLocalEngineAdapter extends DesktopControlAdapter {
       try {
         if (job.killGroup) job.killGroup('SIGTERM');
         else if (job.child && !job.child.killed) job.child.kill('SIGTERM');
-      } catch {}
+      } catch  {
+      // swallow-ok: process or file cleanup
+    }
     }
     this.activeJobs.clear();
     return { recovered: true, activeJobs: 0 };
@@ -287,7 +291,9 @@ export class ChatGptLocalEngineAdapter extends DesktopControlAdapter {
     }
     const cleanupTemp = () => {
       if (tempDir) {
-        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch  {
+      // swallow-ok: process or file cleanup
+    }
         tempDir = null;
       }
     };
@@ -343,7 +349,9 @@ export class ChatGptLocalEngineAdapter extends DesktopControlAdapter {
           if (detached && child.pid) process.kill(-child.pid, signal);
           else child.kill(signal);
         } catch {
-          try { child.kill(signal); } catch {}
+          try { child.kill(signal); } catch  {
+      // swallow-ok: process or file cleanup
+    }
         }
       };
       jobRecord.killGroup = killGroup;
@@ -381,13 +389,17 @@ export class ChatGptLocalEngineAdapter extends DesktopControlAdapter {
         if (responseText.length > lastEmitted.length && responseText.startsWith(lastEmitted)) {
           const delta = responseText.slice(lastEmitted.length);
           lastEmitted = responseText;
-          try { onTextDelta(delta); } catch {}
+          try { onTextDelta(delta); } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
         }
       };
 
       const handleEvent = (event) => {
         if (typeof onEvent === 'function') {
-          try { onEvent(event); } catch {}
+          try { onEvent(event); } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
         }
         if (event.type === 'thread.started') {
           activeThreadId = event.thread_id || activeThreadId;

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getScrubbedEnv } from '../utils/scrubbed-env.js';
+import { validateTargetApp, escapeJxaString } from '../utils/jxa-sanitizer.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -18,10 +19,16 @@ export class ConversationLocator {
   /**
    * Find the currently active conversation in the specified target application.
    */
-  async findActiveConversation({ targetApp, bundleId = null }) {
-    const script = `
+  /**
+   * Pure builder for conversation detection JXA script.
+   * Validates targetApp and safely escapes all parameters.
+   */
+  static buildLocateScript(targetApp) {
+    validateTargetApp(targetApp);
+    const safeApp = escapeJxaString(targetApp);
+    return `
       var se = Application("System Events");
-      var procs = se.applicationProcesses.whose({name: "${targetApp}"});
+      var procs = se.applicationProcesses.whose({name: ${safeApp}});
       if (procs.length === 0) {
         JSON.stringify({ found: false, error: "PROCESS_NOT_FOUND" });
       } else {
@@ -35,7 +42,9 @@ export class ConversationLocator {
         } else {
           var win = wins[0];
           var title = "";
-          try { title = win.title(); } catch(e) {}
+          try { title = win.title(); } catch (e) {
+            // swallow-ok: safe fallback for non-serializable object
+          }
 
           // Search for conversation headers, selected sidebar items, or active document title
           var conversationTitle = title;
@@ -47,11 +56,17 @@ export class ConversationLocator {
             try {
               var role = elem.role();
               var desc = "";
-              try { desc = elem.description(); } catch(e) {}
+              try { desc = elem.description(); } catch (e) {
+                // swallow-ok: intentional non-fatal error suppression
+              }
               var val = "";
-              try { val = elem.value(); } catch(e) {}
+              try { val = elem.value(); } catch (e) {
+                // swallow-ok: intentional non-fatal error suppression
+              }
               var subrole = "";
-              try { subrole = elem.subrole(); } catch(e) {}
+              try { subrole = elem.subrole(); } catch (e) {
+                // swallow-ok: intentional non-fatal error suppression
+              }
 
               // Detect selected chat navigation item
               if ((role === "AXRow" || role === "AXStaticText" || role === "AXButton") && 
@@ -67,21 +82,25 @@ export class ConversationLocator {
                   if (elem.focused()) {
                     focusedArea = { role: role, description: desc };
                   }
-                } catch(e) {}
+                } catch (e) {
+                  // swallow-ok: intentional non-fatal error suppression
+                }
               }
 
               var kids = elem.uiElements();
               for (var i = 0; i < kids.length; i++) {
                 scanElements(kids[i], depth + 1);
               }
-            } catch(e) {}
+            } catch (e) {
+              // swallow-ok: intentional non-fatal error suppression
+            }
           }
 
           scanElements(win, 0);
 
           JSON.stringify({
             found: true,
-            targetApp: "${targetApp}",
+            targetApp: ${safeApp},
             windowTitle: title,
             conversationTitle: conversationTitle,
             conversationId: conversationId,
@@ -91,6 +110,23 @@ export class ConversationLocator {
         }
       }
     `;
+  }
+
+  /**
+   * Find the currently active conversation in the specified target application.
+   */
+  async findActiveConversation({ targetApp, bundleId = null }) {
+    let script;
+    try {
+      script = ConversationLocator.buildLocateScript(targetApp);
+    } catch (err) {
+      return {
+        unambiguous: false,
+        conversation: null,
+        status: 'INVALID_TARGET_APP',
+        error: err.message
+      };
+    }
 
     try {
       const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], { timeout: 4000, env: getScrubbedEnv() });

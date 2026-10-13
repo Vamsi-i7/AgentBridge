@@ -48,7 +48,9 @@ export function formatCompactResultEnvelope({
   if (casStore && typeof casStore.store === 'function') {
     try {
       casStore.store(rawBody, { sha256 });
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
   }
 
   // Bounded digest

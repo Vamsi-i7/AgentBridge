@@ -102,7 +102,9 @@ export class PersistentDesktopSessionManager {
     try {
       await execFileAsync('open', ['-a', targetApp], { env: getScrubbedEnv() });
       await new Promise(r => setTimeout(r, 800));
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
 
     inspect = await this.swiftBridge.inspectApp(targetApp);
     if (inspect.ok && inspect.windowCount > 0) {

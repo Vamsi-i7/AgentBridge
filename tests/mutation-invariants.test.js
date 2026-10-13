@@ -5,6 +5,7 @@ import { ResponseCorrelatorV2 } from '../src/correlation/response-correlator-v2.
 import { AttemptLedger } from '../src/attempts/attempt-ledger.js';
 import { CheapFirstRouter } from '../src/routing/cheap-first-router.js';
 import { SignedSkillRegistry } from '../src/skills/skill-registry.js';
+import { SkillsManager } from '../src/skills/skills-manager.js';
 import { AuditLogger } from '../src/audit-logger.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -113,7 +114,10 @@ test('10 Key Security Invariant Mutation Tests [TEST-PROVEN]', async (t) => {
 
     // Invariant 8: Mandatory Human Approval for Skills
     await t.test('INV-08: Agent cannot approve its own skill installation', () => {
-      const registry = new SignedSkillRegistry();
+      const skillsDir = path.join(tmpDir, 'skills');
+      const lockfilePath = path.join(skillsDir, 'skills.lock.json');
+      const skillsManager = new SkillsManager({ skillsRoot: skillsDir, lockfilePath });
+      const registry = new SignedSkillRegistry({ skillsManager });
       const proposal = { name: 'rogue-skill', sha256: 'deadbeef', permissions: ['SHELL'] };
 
       assert.throws(() => {

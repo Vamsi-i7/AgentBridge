@@ -90,7 +90,9 @@ export class RequestExplainer {
           WHERE attempt_id IN (${placeholders})
           ORDER BY created_at ASC
         `).all(...attemptIds);
-      } catch {}
+      } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
     }
 
     // 6. Fetch Quarantined Responses
@@ -100,7 +102,9 @@ export class RequestExplainer {
         SELECT * FROM bridge_quarantined_responses
         WHERE request_id = ?
       `).all(requestId);
-    } catch {}
+    } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
 
     // 7. Fetch Granular Lifecycle Trace
     let lifecycleStages = [];
@@ -110,7 +114,9 @@ export class RequestExplainer {
         WHERE request_id = ?
         ORDER BY id ASC
       `).all(requestId);
-    } catch {}
+    } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
 
     // 8. Synthesize Chronological Causal Timeline
     const timeline = [];

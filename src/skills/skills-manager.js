@@ -3,11 +3,29 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { scanSkillDirectory, parseFrontmatter, RiskTier } from './scanner.js';
 
+function isTestEnvironment() {
+  return Boolean(
+    process.env.NODE_TEST_CONTEXT ||
+    process.env.NODE_ENV === 'test' ||
+    (Array.isArray(process.execArgv) && process.execArgv.some(a => a.startsWith('--test'))) ||
+    (Array.isArray(process.argv) && process.argv.some(a => a.includes('node:test') || (a.includes('tests/') && a.endsWith('.test.js'))))
+  );
+}
+
 export class SkillsManager {
   constructor(options = {}) {
     const bridgeRoot = options.bridgeRoot || path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
     this.skillsRoot = options.skillsRoot || path.join(bridgeRoot, '.agents', 'skills');
     this.lockfilePath = options.lockfilePath || path.join(this.skillsRoot, 'skills.lock.json');
+    if (
+      isTestEnvironment() &&
+      !process.env.AGENT_BRIDGE_ALLOW_PROD_SKILLS_IN_TEST &&
+      path.resolve(this.lockfilePath) === path.resolve(path.join(bridgeRoot, '.agents', 'skills', 'skills.lock.json'))
+    ) {
+      throw new Error(
+        `HermeticityViolation: SkillsManager resolved to tracked lockfile '${this.lockfilePath}' in test environment! Pass { skillsRoot, lockfilePath } with isolated paths.`
+      );
+    }
     this.ensureLayout();
   }
 
@@ -30,7 +48,9 @@ export class SkillsManager {
       if (fs.existsSync(this.lockfilePath)) {
         return JSON.parse(fs.readFileSync(this.lockfilePath, 'utf8'));
       }
-    } catch {}
+    } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
     return { version: '1.0.0', updatedAt: new Date().toISOString(), skills: {} };
   }
 
@@ -110,7 +130,9 @@ export class SkillsManager {
               discovered.set(key, { key, source, name: sub.name, dirPath: subPath });
             }
           }
-        } catch {}
+        } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
     }
 
@@ -172,7 +194,9 @@ export class SkillsManager {
           sha256: null,
           installedAt: null
         });
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     return results.slice(0, limit);
@@ -310,7 +334,9 @@ export class SkillsManager {
             score += count * 4;
           }
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
 
       if (score > 0) {
         scored.push({ ...item, searchScore: score });

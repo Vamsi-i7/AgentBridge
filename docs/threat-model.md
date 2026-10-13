@@ -107,7 +107,7 @@ Agent Bridge follows a **strict default-deny architecture**: no agent can promot
 
 ## 5. Security Invariant Regression Guarantees
 
-The following 10 invariants are verified by automated regression and mutation tests:
+The following 10 invariants are verified by automated regression and invariant mutation tests (in `tests/mutation-invariants.test.js` and `tests/v2-adversarial-integration.test.js`):
 1. `INV-01`: Path traversal outside `ALLOWED_ROOTS` is rejected.
 2. `INV-02`: Agent self-elevation or permission expansion is blocked.
 3. `INV-03`: Stale attempts cannot settle active or completed tasks (attempt/epoch fencing).

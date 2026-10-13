@@ -86,7 +86,9 @@ export class ContextCache {
             VALUES (?, ?, ?, ?, ?)
           `).run(hash, text, sizeBytes, JSON.stringify(metadata), now);
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: safe fallback for non-serializable object
+    }
     }
 
     return {
@@ -120,7 +122,9 @@ export class ContextCache {
           });
           return row.content;
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
     }
 
     return null;

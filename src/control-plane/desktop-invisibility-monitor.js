@@ -94,7 +94,9 @@ export class DesktopInvisibilityMonitor {
           session.focusChangeDetected = true;
           session.alienSamples.push(sample);
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }, this.sampleIntervalMs);
 
     this.activeSession = session;

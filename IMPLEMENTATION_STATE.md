@@ -1,23 +1,23 @@
 # Agent Bridge — Current Implementation State
 
-**Refreshed:** 2026-10-12
+**Refreshed:** 2026-10-13
 **Repository:** `/Users/jayanthpranaykonada/agent-bridge`  
-**HEAD (baseline):** `38d44c54ddfbb97eacc8c0327221311ab92f7e28`
+**HEAD (baseline):** `a8abd59ac784106436e9b62c2febf8924968d84d`
 **Branch:** `main`
-**Tree:** Working tree preserves completed Mission 4C ("Close the Gaps, With Evidence") hardening and truthful completion fixes. Zia untouched (clean 0 bytes).
-**Active Tools:** 81 tools registered in `src/tool-registry.js`.
+**Tree:** Working tree preserves completed hardening mission changes and truthful completion fixes. Zia untouched (clean 0 bytes).
+**Active Tools:** 74 tools registered in core `src/tool-registry.js` (+ 5 skills-profile + 2 communication-profile = 81 total tools system-wide).
 
 This is the authoritative implementation handoff for Agent Bridge. It supersedes older notes and reflects the ground-truth state verified against live processes and test suites.
 
 ## Verification
 
-Full regression suite (`npm test` → `node --test tests/*.test.js`), latest run under Mission 4C:
+Full regression suite (`npm run test:hermetic` → hermetic verification harness across all test suites):
 
-- tests: **1120**
-- pass: **1112**
+- tests: **1156**
+- pass: **1148**
 - fail: **0**
 - skipped: **8** (explicitly live-gated: live model quota/credentials requiring explicit opt-in)
-- duration: **38.56s**
+- duration: **~42.4s**
 - exit code: **0**
 
 ## Mission 4C Hardening & Verification Architecture
@@ -165,7 +165,7 @@ Zero-waste inter-agent responses are canonicalized into `ArtifactStore` (`bridge
   - Strict compliance with Agent Bridge protected-branch policies.
   - Zero network telemetry or remote code execution hooks.
   - Documented in `.agents/skills/mcp-builder/VETTING_AUDIT.md`.
-- **Suite Verification:** Full regression suite green (687 tests, 679 passed, 0 failed, 8 skipped).
+- **Suite Verification:** Full regression suite green (1156 tests, 1148 passed, 0 failed, 8 skipped).
 
 ## Agent lifecycle
 
@@ -356,7 +356,7 @@ integrity-verified transport for real binary artifacts:
 - retrieval authorized per artifact (storing agent + explicitly authorized
   agents), so one task cannot read another task's artifact
 - exposed through tools `bridge_artifact_store`, `bridge_artifact_get`,
-  `bridge_artifact_read`, `bridge_artifact_cleanup` (registry now 64 tools)
+  `bridge_artifact_read`, `bridge_artifact_cleanup` (historical milestone 64 tools; currently 74 registered tools)
 
 Security hardening (audit & hardening phase):
 
@@ -479,7 +479,7 @@ The following matrix represents the empirical, ground-truth capabilities verifie
 
 ## Live Runtime & Parity Verification
 
-- **Bridge PID:** 48913 (`node src/index.js`) listening on `127.0.0.1:8765`.
+- **Bridge PID:** Dynamically inspected via `lsof -nP -iTCP:8765 -sTCP:LISTEN` or `bridge doctor` (background listener bound to `127.0.0.1:8765`).
 - **Endpoints:**
   - `/health` → `200 OK` (`{"status":"healthy","uptime":...}`)
   - `/mcp` → Standard JSON-RPC 2.0 endpoint for MCP tooling.
@@ -537,13 +537,13 @@ Known remaining latency (not changed, by design — no evidence of bridge fault)
 
 Measured with `node scripts/bench/bench-tool-schema.mjs`:
 
-- 64 tools, **21,397 serialized bytes** (exact). Breakdown: names 1,332; descriptions 4,236; schemas 13,012.
+- 74 registered tools (historically 64 tools, **21,397 serialized bytes**; currently 74 registered tools in default profile, 81 total tools system-wide). Breakdown historically: names 1,332; descriptions 4,236; schemas 13,012.
 - Token figure is an **estimate only** (no serving-model tokenizer is bundled): ~4,755–5,944
   tokens depending on chars/token ratio. Not an exact provider count.
 - The schema is **already minimal**: 172/218 properties are type-only, no `additionalProperties`,
   no empty `required`, no duplicated property descriptions, no duplicated tool descriptions.
-- Determination: the bridge always serves all 64 tools from `tools/list` (stdio and HTTP), emits no
-  `notifications/tools/list_changed`, and has no per-route filtering. Whether a client re-injects the
+- Determination: the bridge serves all 74 registered tools from `tools/list` in the default `all` profile (stdio and HTTP), emits
+  `notifications/tools/list_changed` when profiles mutate, and supports progressive tool disclosure via profiles (`minimal`, `collaborator`, `developer`, `communication`, `skills`). Whether a client re-injects the
   list into model context every turn is client-controlled and cannot be observed from the bridge.
 - **Rejected reductions (with reasons):** dynamic/capability-filtered tool exposure (MCP client
   compatibility cannot be verified here; hiding capabilities risks task failure); removing fields or
@@ -693,7 +693,7 @@ cycle-safe and bounded. Covered by `tests/delegation-bounds.test.js`.
 - **Tools:** `bridge_store_knowledge`, `bridge_search_knowledge`, `bridge_get_knowledge`.
 
 ### 4. Curated Open-Source Tool Ecosystem
-Nine new tools registered in `ToolRegistry` (total 73 tools), fully authorization-gated and permission-bound:
+Nine new tools registered in `ToolRegistry` (historical milestone total 73 tools; currently 74 registered tools, 81 total tools system-wide), fully authorization-gated and permission-bound:
 - **Fast Code Search:** `searchFiles` and `findSymbol` in `ProjectController` accelerated via ripgrep (`rg`) with automatic fallback to pure Node.js recursive traversal.
 - **Syntax Validation:** `bridge_check_syntax` executes non-destructive syntax verification for JavaScript (`node --check`), JSON (`JSON.parse`), and Python (`python3 -m py_compile`) without executing untrusted code.
 - **Structured Data Extraction:** `bridge_extract_data` extracts structured slices from JSON (via dot-path queries), CSV (headers and first N rows), and Markdown (section headings) deterministically, consuming 0 model tokens for parsing.

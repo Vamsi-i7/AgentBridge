@@ -119,7 +119,9 @@ export class AutonomousCollaborationOrchestrator extends EventEmitter {
           objective: objective.trim(),
           metadata: { collaborationId, authorizedAgents: [...normalizedAgents] }
         });
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     if (this.logger?.log) {
@@ -132,7 +134,9 @@ export class AutonomousCollaborationOrchestrator extends EventEmitter {
           status: 'success',
           details: { collaborationId, objective, authorizedAgents: [...normalizedAgents] }
         });
-      } catch {}
+      } catch  {
+      // swallow-ok: secondary notification or event dispatch failure is non-fatal
+    }
     }
 
     this.emit('collaboration_created', { collaborationId, session });
@@ -322,7 +326,9 @@ export class AutonomousCollaborationOrchestrator extends EventEmitter {
     let syntheticEnvelope = false;
     try {
       syntheticEnvelope = JSON.parse(responseText)?.status === 'EXECUTED_BY_AGENT';
-    } catch {}
+    } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
 
     const isSynthetic = (
       modelResult.provenance === 'synthetic' ||
@@ -384,7 +390,9 @@ export class AutonomousCollaborationOrchestrator extends EventEmitter {
             responseSnippet: responseText.slice(0, 120)
           }
         });
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     if (this.collabManager?.event) {
@@ -395,7 +403,9 @@ export class AutonomousCollaborationOrchestrator extends EventEmitter {
           eventType: 'turn_completed',
           payload: { turnNumber: turn.turnNumber, fromAgent, toAgent, latencyMs: turn.latencyMs }
         });
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     this.emit('turn_completed', { collaborationId: session.id, turn });

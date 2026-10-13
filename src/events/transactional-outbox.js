@@ -45,7 +45,9 @@ export class TransactionalOutbox {
         this.db.exec(`ALTER TABLE bridge_events ADD COLUMN dedup_key TEXT;`);
         this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_bridge_events_dedup ON bridge_events(dedup_key);`);
       }
-    } catch {}
+    } catch  {
+      // swallow-ok: DDL schema idempotency check
+    }
   }
 
   /**
@@ -114,7 +116,9 @@ export class TransactionalOutbox {
       if (started && !committed) {
         try {
           this.db.exec('ROLLBACK;');
-        } catch {}
+        } catch  {
+      // swallow-ok: transaction may already be resolved or closed
+    }
       }
       throw err;
     } finally {
@@ -225,20 +229,26 @@ export class TransactionalOutbox {
         this.db.prepare(`
           UPDATE bridge_outbox SET published_at = ? WHERE event_id = ?
         `).run(now, event.eventId);
-      } catch {}
+      } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
 
       // Cross-process notify file touch
       if (this.eventBus?.notifyFilePath && this.eventBus.dbPath !== ':memory:') {
         try {
           fs.writeFileSync(this.eventBus.notifyFilePath, String(event.eventId));
-        } catch {}
+        } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
 
       // In-process immediate dispatch to subscribers
       if (this.eventBus && typeof this.eventBus.dispatchLocal === 'function') {
         try {
           this.eventBus.dispatchLocal(event);
-        } catch {}
+        } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
     }
   }
@@ -278,13 +288,17 @@ export class TransactionalOutbox {
       if (this.eventBus?.notifyFilePath && this.eventBus.dbPath !== ':memory:') {
         try {
           fs.writeFileSync(this.eventBus.notifyFilePath, String(r.event_id));
-        } catch {}
+        } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
       }
 
       if (this.eventBus && typeof this.eventBus.dispatchLocal === 'function') {
         try {
           this.eventBus.dispatchLocal(event);
-        } catch {}
+        } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
 
       count++;

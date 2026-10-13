@@ -73,7 +73,9 @@ export class GitController {
         if (isBare.trim() === 'true') {
           return;
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       throw new Error(`InvalidGitRepository: '${repoPath}' is not a valid git repository.`);
     }
   }

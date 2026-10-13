@@ -6,13 +6,16 @@ import os from 'node:os';
 import { scanSkillDirectory, RiskTier } from '../src/skills/scanner.js';
 import { SkillsManager } from '../src/skills/skills-manager.js';
 import { ToolRegistry } from '../src/tool-registry.js';
+import { createHermeticSkillsEnv } from './helpers/hermetic.js';
 
 test('Stage 3 & 4 — Skills Platform Core & In-House Skills Suite', async (t) => {
   const tmpRoot = path.join(os.tmpdir(), `test-skills-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   fs.mkdirSync(tmpRoot, { recursive: true });
+  const hermeticInhouse = createHermeticSkillsEnv({ copyInhouse: true });
 
   t.after(() => {
     try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+    hermeticInhouse.cleanup();
   });
 
   await t.test('1. Static Scanner: Valid Tier A documentation skill passes all checks', async () => {
@@ -165,7 +168,10 @@ Verified content here.
   });
 
   await t.test('7. SkillsManager: getSkillResource safe path access & directory traversal denial', async () => {
-    const manager = new SkillsManager();
+    const manager = new SkillsManager({
+      skillsRoot: hermeticInhouse.skillsRoot,
+      lockfilePath: hermeticInhouse.lockfilePath
+    });
     // Test on real installed in-house skill
     const skill = manager.getSkill({ name: 'bridge-delegation', source: 'inhouse' });
     assert.equal(skill.name, 'bridge-delegation');
@@ -183,7 +189,10 @@ Verified content here.
   });
 
   await t.test('8. SkillsManager: searchSkills BM25 keyword relevance ranking', async () => {
-    const manager = new SkillsManager();
+    const manager = new SkillsManager({
+      skillsRoot: hermeticInhouse.skillsRoot,
+      lockfilePath: hermeticInhouse.lockfilePath
+    });
     const results = manager.searchSkills({ query: 'delegation recursion depth' });
     assert.ok(results.length > 0);
     assert.equal(results[0].name, 'bridge-delegation', 'Most relevant skill for delegation query must rank #1');
@@ -194,7 +203,10 @@ Verified content here.
   });
 
   await t.test('9. All 7 In-House Skills pass full platform verification in repo', async () => {
-    const manager = new SkillsManager();
+    const manager = new SkillsManager({
+      skillsRoot: hermeticInhouse.skillsRoot,
+      lockfilePath: hermeticInhouse.lockfilePath
+    });
     const inhouseSkills = [
       'bridge-delegation',
       'bridge-response-handling',
@@ -216,14 +228,19 @@ Verified content here.
 
   await t.test('10. ToolRegistry: Skills tools execute through MCP tool boundary', async () => {
     const registry = new ToolRegistry();
+    const manager = new SkillsManager({
+      skillsRoot: hermeticInhouse.skillsRoot,
+      lockfilePath: hermeticInhouse.lockfilePath
+    });
+    const ctx = { skillsManager: manager };
 
     // 10a. bridge_list_skills
-    const listRes = await registry.executeTool('bridge_list_skills', { limit: 10 });
+    const listRes = await registry.executeTool('bridge_list_skills', { limit: 10 }, ctx);
     assert.ok(Array.isArray(listRes));
     assert.ok(listRes.length >= 7);
 
     // 10b. bridge_get_skill
-    const getRes = await registry.executeTool('bridge_get_skill', { name: 'bridge-delegation' });
+    const getRes = await registry.executeTool('bridge_get_skill', { name: 'bridge-delegation' }, ctx);
     assert.equal(getRes.name, 'bridge-delegation');
     assert.ok(getRes.content.includes('Bridge Delegation Skill'));
 
@@ -231,11 +248,11 @@ Verified content here.
     const resRes = await registry.executeTool('bridge_get_skill_resource', {
       name: 'bridge-delegation',
       path: 'SKILL.md'
-    });
+    }, ctx);
     assert.ok(resRes.content.includes('# Bridge Delegation Skill'));
 
     // 10d. bridge_search_skills
-    const searchRes = await registry.executeTool('bridge_search_skills', { query: 'compaction' });
+    const searchRes = await registry.executeTool('bridge_search_skills', { query: 'compaction' }, ctx);
     assert.ok(searchRes.length > 0);
     assert.equal(searchRes[0].name, 'bridge-handoff-compaction');
   });

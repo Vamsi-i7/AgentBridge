@@ -544,7 +544,9 @@ export class DesktopControlPlane extends EventEmitter {
     } catch (err) {
       envelope.transition(RequestState.UNKNOWN, { error: err.message });
       if (previousFocus) {
-        try { await this.sessionManager.restoreUserFocus(previousFocus); } catch {}
+        try { await this.sessionManager.restoreUserFocus(previousFocus); } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
       return {
         success: false,

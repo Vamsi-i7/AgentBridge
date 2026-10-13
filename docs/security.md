@@ -22,3 +22,26 @@
 - **Browser Protection:** Foreign `Origin` and non-loopback `Host` headers return `HTTP 403 Forbidden`.
 
 For the complete attacker vectors and mitigations, refer to [threat-model.md](file:///Users/jayanthpranaykonada/agent-bridge/docs/threat-model.md).
+
+---
+
+## 3. HTTP Control Plane Authentication & Loopback Protection (AR-12)
+
+The Agent Bridge HTTP server listens on loopback (`127.0.0.1:8765`) by default.
+
+### Authentication Modes:
+1. **Unauthenticated Loopback (`none-loopback`)**:
+   - Default mode when `CONTROL_PLANE_API_KEY` is not set.
+   - Emits a startup warning `[SECURITY WARNING]` to alert operators.
+   - Local processes can access unauthenticated liveness endpoints, but protected endpoints (`/api/task`, `/api/message`, `/api/audit`, `/api/chatgpt/*`) enforce fail-closed credential checks.
+   - `/health` reports `auth: "none-loopback"` and `authEnabled: false`.
+
+2. **Authenticated (`api-key`)**:
+   - Enabled by setting the environment variable `CONTROL_PLANE_API_KEY=<strong-secret>` or `AGENT_BRIDGE_API_KEY=<strong-secret>`.
+   - All protected routes and MCP invocations require `x-api-key: <strong-secret>` or `Authorization: Bearer <strong-secret>`.
+   - `/health` reports `auth: "api-key"` and `authEnabled: true`.
+
+### Defense in Depth Controls:
+- **Origin Header Guard:** All browser-originated requests containing an `Origin` header are rejected with `HTTP 403 Forbidden` to prevent Cross-Site Request Forgery (CSRF).
+- **Host Header Guard:** ChatGPT brain endpoints reject non-loopback Host headers to prevent DNS-rebinding attacks.
+- **Request Body Limits:** HTTP request payloads are strictly capped at 5 MB; oversized requests are rejected with `HTTP 413 Payload Too Large`.

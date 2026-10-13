@@ -41,10 +41,18 @@ export class RetentionPruner {
     const cutoff = new Date(Date.now() - retentionDays * 86400000).toISOString();
     try {
       // Strictly restrict to terminal states
+      let col = 'status';
+      try {
+        const cols = this.db.prepare('PRAGMA table_info(bridge_requests)').all();
+        if (cols.some(c => c.name === 'status')) col = 'status';
+        else if (cols.some(c => c.name === 'state')) col = 'state';
+      } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
       const res = this.db.prepare(`
         DELETE FROM bridge_requests 
         WHERE created_at < ? 
-          AND state IN ('completed', 'failed', 'cancelled', 'quarantined')
+          AND ${col} IN ('completed', 'failed', 'cancelled', 'quarantined')
       `).run(cutoff);
       return { pruned: res.changes || 0, cutoff };
     } catch {

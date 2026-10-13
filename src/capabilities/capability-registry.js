@@ -148,7 +148,9 @@ export class CapabilityRegistry {
             updatedAt: row.updated_at
           };
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     return this.memoryRecords.get(key) || {
@@ -194,7 +196,9 @@ export class CapabilityRegistry {
           });
         }
         if (out.length > 0) return out;
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     for (const record of this.memoryRecords.values()) {

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
@@ -25,6 +26,9 @@ test('Real MCP stdio client handshake (official SDK)', async (t) => {
   if (!fs.existsSync(TEST_WORKSPACE)) fs.mkdirSync(TEST_WORKSPACE, { recursive: true });
   fs.writeFileSync(FIXTURE, 'line one\nline two\nline three\n');
 
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdio-1-'));
+  const testDb = path.join(tmpDir, 'test.sqlite');
+
   const client = new Client(
     { name: 'agent-bridge-stdio-test', version: '1.0.0' },
     { capabilities: {} }
@@ -33,7 +37,7 @@ test('Real MCP stdio client handshake (official SDK)', async (t) => {
     command: process.execPath,
     args: [SERVER_ENTRY],
     cwd: path.join(__dirname, '..'),
-    env: { ...process.env, AGENT_ID: 'claude-desktop', AGENT_BRIDGE_TOOL_PROFILE: 'all' },
+    env: { ...process.env, AGENT_ID: 'claude-desktop', AGENT_BRIDGE_TOOL_PROFILE: 'all', AGENT_BRIDGE_DB_PATH: testDb },
     stderr: 'pipe'
   });
 
@@ -41,6 +45,7 @@ test('Real MCP stdio client handshake (official SDK)', async (t) => {
   t.after(async () => {
     try { await client.close(); } catch {}
     try { fs.unlinkSync(FIXTURE); } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   });
 
   await t.test('initialize completed and tools/list returns the full registry', async () => {
@@ -111,9 +116,11 @@ test('Real MCP stdio client handshake (official SDK)', async (t) => {
 });
 
 test('MCP stdio JSON-RPC framing survives malformed input', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdio-2-'));
+  const testDb = path.join(tmpDir, 'test.sqlite');
   const child = spawn(process.execPath, [SERVER_ENTRY], {
     cwd: path.join(__dirname, '..'),
-    env: { ...process.env, AGENT_ID: 'claude-desktop', AGENT_BRIDGE_TOOL_PROFILE: 'all' },
+    env: { ...process.env, AGENT_ID: 'claude-desktop', AGENT_BRIDGE_TOOL_PROFILE: 'all', AGENT_BRIDGE_DB_PATH: testDb },
     stdio: ['pipe', 'pipe', 'pipe']
   });
 
@@ -123,6 +130,7 @@ test('MCP stdio JSON-RPC framing survives malformed input', async (t) => {
 
   t.after(() => {
     try { child.kill('SIGKILL'); } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   });
 
   const waitFor = (predicate, timeoutMs = 5000) => new Promise((resolve, reject) => {

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { CONFIG } from '../config.js';
+import { getBuildInfo } from '../utils/build-info.js';
 
 /**
  * Bridge Doctor Diagnostic & Health Validation Engine (Mission 4 - Part C.1)
@@ -87,7 +88,9 @@ export async function runBridgeDoctor(options = {}) {
     } else if (fs.existsSync(dbPath)) {
       schemaOk = true;
     }
-  } catch {}
+  } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
 
   checks.push({
     name: 'Database & Schema Integrity',
@@ -149,11 +152,13 @@ export async function runBridgeDoctor(options = {}) {
 
   // Generate formatted diagnostic report
   const passed = checks.every(c => c.status !== 'FAIL');
+  const buildInfo = getBuildInfo();
   const lines = [
     '========================================================================',
     '                 AGENT BRIDGE DOCTOR — SYSTEM DIAGNOSTIC               ',
     '========================================================================',
     `Timestamp: ${new Date().toISOString()}`,
+    `Build ID: ${buildInfo.buildId}`,
     `Bridge Root: ${CONFIG.BRIDGE_ROOT}`,
     `Overall Verdict: ${passed ? '✅ PASS - System Healthy & Ready' : '❌ FAIL - Action Required'}\n`
   ];
@@ -171,6 +176,8 @@ export async function runBridgeDoctor(options = {}) {
 
   return {
     passed,
+    buildId: buildInfo.buildId,
+    auth: apiKey ? 'api-key' : 'none-loopback',
     checks,
     report: lines.join('\n')
   };

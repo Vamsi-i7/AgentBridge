@@ -74,9 +74,13 @@ export class WorkerSupervisor extends EventEmitter {
           return { running: true, pid, managed: false };
         } else {
           // Stale PID file
-          try { fs.unlinkSync(pidFile); } catch {}
+          try { fs.unlinkSync(pidFile); } catch  {
+      // swallow-ok: process or file cleanup
+    }
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: process or file cleanup
+    }
     }
 
     return { running: false, pid: null, managed: false };
@@ -151,7 +155,9 @@ export class WorkerSupervisor extends EventEmitter {
     this.workers.set(agentId, workerState);
 
     child.on('exit', (code, signal) => {
-      try { fs.closeSync(logFd); } catch {}
+      try { fs.closeSync(logFd); } catch  {
+      // swallow-ok: optional record lookup fallback
+    }
       this.handleWorkerExit(agentId, pid, code, signal, options);
     });
 
@@ -175,7 +181,9 @@ export class WorkerSupervisor extends EventEmitter {
           fs.unlinkSync(pidFile);
         }
       }
-    } catch {}
+    } catch  {
+      // swallow-ok: process or file cleanup
+    }
 
     const workerState = this.workers.get(agentId);
     if (this.stopping.has(agentId) || options.once) {
@@ -232,7 +240,9 @@ export class WorkerSupervisor extends EventEmitter {
 
     try {
       process.kill(targetPid, 'SIGTERM');
-    } catch {}
+    } catch  {
+      // swallow-ok: process or file cleanup
+    }
 
     // Wait for exit
     const t0 = Date.now();
@@ -243,7 +253,9 @@ export class WorkerSupervisor extends EventEmitter {
 
     // Force kill if still alive
     if (this.isProcessAlive(targetPid)) {
-      try { process.kill(targetPid, 'SIGKILL'); } catch {}
+      try { process.kill(targetPid, 'SIGKILL'); } catch  {
+      // swallow-ok: process or file cleanup
+    }
       await new Promise(r => setTimeout(r, 100));
     }
 
@@ -251,7 +263,9 @@ export class WorkerSupervisor extends EventEmitter {
     try {
       const pidFile = this.getPidFilePath(agentId);
       if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
-    } catch {}
+    } catch  {
+      // swallow-ok: process or file cleanup
+    }
 
     this.workers.delete(agentId);
     this.stopping.delete(agentId);

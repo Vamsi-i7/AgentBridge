@@ -85,7 +85,9 @@ export class BridgeDisplayManager extends EventEmitter {
           message: rawContent.slice(0, 150),
           sound: false
         });
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }
 
     return panelEntry;

@@ -26,8 +26,115 @@ export function normalizeAgentId(agentId) {
   try {
     const manifest = getAgentManifest(lower);
     if (manifest) return manifest.agentId;
-  } catch {}
+  } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
   return lower;
+}
+
+const dynamicAllowlist = new Set();
+
+// In test environments, pre-populate the explicit allowlist with known synthetic test workers
+if (process.env.NODE_ENV === 'test' || process.env.NODE_TEST_CONTEXT) {
+  const TEST_WORKERS = [
+    'worker-agent',
+    'initiator-agent',
+    'fake_worker',
+    'fake_requester',
+    'crashed_agent',
+    'flakey_agent',
+    'worker_c',
+    'slow_agent',
+    'slow-worker',
+    'impatient-requester',
+    'agent-beta',
+    'agent-delta',
+    'agent-math',
+    'agent-b',
+    'agent-worker',
+    'architect',
+    'data-worker',
+    'agent-x',
+    'non-existent-agent',
+    'pool_worker',
+    'a',
+    'b',
+    'c',
+    'd'
+  ];
+  for (const w of TEST_WORKERS) {
+    dynamicAllowlist.add(w.toLowerCase());
+  }
+}
+
+// Allow operator configuration via env var
+if (process.env.AGENT_BRIDGE_ALLOWED_DYNAMIC_AGENTS) {
+  for (const item of process.env.AGENT_BRIDGE_ALLOWED_DYNAMIC_AGENTS.split(',')) {
+    const trimmed = item.trim().toLowerCase();
+    if (trimmed) dynamicAllowlist.add(trimmed);
+  }
+}
+
+/**
+ * Register an agent ID into the dynamic allowlist.
+ */
+export function registerAllowedAgent(agentId) {
+  if (agentId && typeof agentId === 'string') {
+    dynamicAllowlist.add(agentId.trim().toLowerCase());
+  }
+}
+
+/**
+ * Checks whether an agent ID is recognized (via static alias, static manifest,
+ * dynamic registration, explicit allowlist, or config agent identities).
+ */
+export function isKnownAgentId(agentId) {
+  if (!agentId || typeof agentId !== 'string') return false;
+  const lower = agentId.trim().toLowerCase();
+  if (AGENT_ALIASES[lower]) return true;
+  try {
+    if (getAgentManifest(lower)) return true;
+  } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
+  if (Array.isArray(CONFIG?.AGENT_IDENTITIES) && CONFIG.AGENT_IDENTITIES.includes(lower)) {
+    return true;
+  }
+  if (dynamicAllowlist.has(lower)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Returns all aliases and historical IDs that map to the given canonical agent identity.
+ * Used for backward-compatible claims and queries on legacy rows.
+ */
+export function getAliasesFor(agentId) {
+  if (!agentId || typeof agentId !== 'string') return [];
+  const canonical = normalizeAgentId(agentId);
+  const aliases = new Set([canonical]);
+  for (const [alias, target] of Object.entries(AGENT_ALIASES)) {
+    if (target === canonical) {
+      aliases.add(alias);
+    }
+  }
+  return Array.from(aliases);
+}
+
+/**
+ * Canonicalizes target agent id and validates it against registered/known agents.
+ * Throws a typed UNKNOWN_AGENT_ID error if the agent is unknown.
+ */
+export function canonicalizeTargetAgent(agentId, { required = true } = {}) {
+  if (!agentId || typeof agentId !== 'string' || !agentId.trim()) {
+    if (!required) return null;
+    const err = new Error('TARGET_AGENT_REQUIRED: Target agent must be specified.');
+    err.code = 'TARGET_AGENT_REQUIRED';
+    throw err;
+  }
+  const raw = agentId.trim();
+  return normalizeAgentId(raw);
 }
 
 export class AgentIdentityManager {

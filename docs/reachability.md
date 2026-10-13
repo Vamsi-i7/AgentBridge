@@ -95,7 +95,7 @@
 | `src/events/transactional-outbox.js` | **WIRED** | Utility/Component | Production Module (Wired) |
 | `src/file-activity-manager.js` | **WIRED** | Utility/Component | Production Module (Wired) |
 | `src/git-controller.js` | **WIRED** | Utility/Component | Production Module (Wired) |
-| `src/gui-adapter.js` | **UNWIRED** | Utility/Component | Standalone Library / Secondary Tool |
+| `src/gui-adapter.js` | **TEST-ONLY** | Utility/Component | Experimental Standalone Library (exercised by tests/integration.test.js) |
 | `src/http-server.js` | **WIRED** | Utility/Component | Production Module (Wired) |
 | `src/index.js` | **WIRED** | Utility/Component | Production Module (Wired) |
 | `src/interop/a2a-adapter.js` | **WIRED** | Default-On | Default-On Core Component (Verified Wired) |

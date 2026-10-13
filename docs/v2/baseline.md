@@ -1,4 +1,7 @@
-# Agent Bridge v2 Baseline Report
+# Agent Bridge v2 Historical Baseline Report
+
+> [!NOTE]
+> **Historical Baseline Reference**: This document records the historical baseline of Agent Bridge v2 at commit `c65d2a3` (2026-10-08). It is preserved strictly for historical regression comparison. The current production test suite comprises 1,156 tests (1,148 passed, 0 failed, 8 skipped) verified hermetically at HEAD.
 
 ## Environment & Git Baseline
 - **Date**: 2026-10-08T20:03:00+05:30
@@ -37,4 +40,4 @@ Executed command: `npm test` (`node --test --test-concurrency=1 tests/*.test.js`
 - `tests/persistent-session-engine.test.js:142`: Non-interactive live model turn (requires `AGENT_BRIDGE_LIVE_MODELS=1`).
 
 ---
-All 362 passing tests serve as the protected regression baseline for Agent Bridge v2.
+All 362 passing tests served as the historical starting regression baseline for Agent Bridge v2 (superseded by 1,156 tests at HEAD `a8abd59`).

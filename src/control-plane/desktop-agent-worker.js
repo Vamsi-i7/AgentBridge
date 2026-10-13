@@ -121,7 +121,9 @@ export class DesktopAgentWorker extends EventEmitter {
       this.presence.setOffline(this.agentId, 'agent-autonomous-worker');
     }
     if (this.subscription) {
-      try { this.subscription.unsubscribe(); } catch {}
+      try { this.subscription.unsubscribe(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
       this.subscription = null;
     }
     this.status = DesktopAgentWorkerStatus.STOPPED;
@@ -142,7 +144,9 @@ export class DesktopAgentWorker extends EventEmitter {
   _trace(requestId, stage, meta = null, taskId = null) {
     try {
       this.mailbox?.tracer?.mark({ requestId, stage, taskId, agentId: this.agentId, meta });
-    } catch {}
+    } catch  {
+      // swallow-ok: secondary notification or event dispatch failure is non-fatal
+    }
   }
 
   async handleRequest(requestOrId) {
@@ -247,7 +251,9 @@ export class DesktopAgentWorker extends EventEmitter {
             leaseMs: this.leaseRefreshMs ? this.leaseRefreshMs * 4 : 30000
           });
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
     }, this.leaseRefreshMs);
     if (leaseTimer.unref) leaseTimer.unref();
 
@@ -283,7 +289,9 @@ export class DesktopAgentWorker extends EventEmitter {
               status: 'denied',
               details: { requestId, fromAgent: request.fromAgent, question: qText }
             });
-          } catch {}
+          } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
         }
         return { handled: true, ...payload };
       }
@@ -310,7 +318,9 @@ export class DesktopAgentWorker extends EventEmitter {
               status: 'success',
               details: { requestId, fromAgent: request.fromAgent, tokenRedacted: true }
             });
-          } catch {}
+          } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
         }
         return { handled: true, ...payload };
       }
@@ -359,7 +369,9 @@ export class DesktopAgentWorker extends EventEmitter {
                   if (typeof this.session?.cancel === 'function') {
                     this.session.cancel(requestId);
                   }
-                } catch {}
+                } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
                 resolve({
                   success: true,
                   status: 'COMPLETED_AUTHENTICATED_SUBMIT',
@@ -375,9 +387,15 @@ export class DesktopAgentWorker extends EventEmitter {
           const sub3 = this.eventBus.subscribe('*', checkEv);
           fastSub = {
             unsubscribe: () => {
-              try { sub1?.unsubscribe(); } catch {}
-              try { sub2?.unsubscribe(); } catch {}
-              try { sub3?.unsubscribe(); } catch {}
+              try { sub1?.unsubscribe(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
+              try { sub2?.unsubscribe(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
+              try { sub3?.unsubscribe(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
             }
           };
         }
@@ -386,7 +404,9 @@ export class DesktopAgentWorker extends EventEmitter {
       const sessionPromise = this.session.send({ text: promptText, requestId });
       const result = await Promise.race([sessionPromise, fastPromise]);
       if (fastSub) {
-        try { fastSub.unsubscribe(); } catch {}
+        try { fastSub.unsubscribe(); } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
       }
 
       if (this.mailbox?.markPromptSettled) {
@@ -430,7 +450,9 @@ export class DesktopAgentWorker extends EventEmitter {
       return { handled: true, requestId, success: false, error, status: result.status };
     } catch (err) {
       this.stats.failed++;
-      try { this._settle(request, { status: 'failed', error: err.message }); } catch {}
+      try { this._settle(request, { status: 'failed', error: err.message }); } catch  {
+      // swallow-ok: secondary notification or event dispatch failure is non-fatal
+    }
       this.emit('error', err);
       return { handled: true, requestId, success: false, error: err.message };
     } finally {

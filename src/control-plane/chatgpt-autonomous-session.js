@@ -312,7 +312,9 @@ export class ChatGptAutonomousSession extends ModelExecutionAdapter {
               const delta = response.slice(streamedLen);
               streamedLen = response.length;
               if (typeof onChunk === 'function') {
-                try { onChunk(delta); } catch {}
+                try { onChunk(delta); } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
               }
             }
             if (response === last) stable += 1;
@@ -372,7 +374,9 @@ export class ChatGptAutonomousSession extends ModelExecutionAdapter {
         { activate: false }
       );
       if (typeof onChunk === 'function' && turn.ok && turn.response) {
-        try { onChunk(turn.response); } catch {}
+        try { onChunk(turn.response); } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
       }
       const hasResponseBg = Boolean(turn && turn.response && String(turn.response).trim());
       let isCorrelatedBg = false;

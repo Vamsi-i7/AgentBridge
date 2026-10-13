@@ -18,8 +18,8 @@ A local-first, macOS-only coordination fabric that lets independent desktop AI a
 | **Total project JS lines** (excludes node_modules, .git, tests) | **70,797 lines** |
 | **src/ only** | **37,124 lines** across 123 source files |
 | **src/ disk size** | 1.5 MB |
-| **node_modules** | 245 MB (zod, @modelcontextprotocol/sdk, better-sqlite3, uuid, etc.) |
-| **Test files** | 134 test files |
+| **node_modules** | ~245 MB (`@modelcontextprotocol/sdk` installed dependency tree) |
+| **Test files** | 133 test files (1,156 tests) |
 | **Git commits (origin/main)** | 79 commits |
 | **Git branches** | 13 |
 | **.git object size** | 162 MB |

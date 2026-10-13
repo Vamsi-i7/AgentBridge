@@ -36,7 +36,9 @@ export class RouteEvidenceRegistry {
       if (!fs.existsSync(this.evidenceDir)) {
         fs.mkdirSync(this.evidenceDir, { recursive: true });
       }
-    } catch {}
+    } catch  {
+      // swallow-ok: intentional non-fatal error suppression
+    }
   }
 
   _recordPath(agentId, routeId) {
@@ -105,7 +107,9 @@ export class RouteEvidenceRegistry {
             isLiveVerified: true
           };
         }
-      } catch {}
+      } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
     }
 
     // Default: tops out at mock-tested or declared in baseline manifest

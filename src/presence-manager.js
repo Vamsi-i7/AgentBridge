@@ -381,7 +381,9 @@ export class PresenceManager {
 
       let caps = [];
       if (primary?.capabilities) {
-        try { caps = JSON.parse(primary.capabilities); } catch {}
+        try { caps = JSON.parse(primary.capabilities); } catch  {
+      // swallow-ok: safe fallback for plaintext or non-JSON input
+    }
       }
 
       result.push({
@@ -440,7 +442,9 @@ export class PresenceManager {
       clearInterval(timer);
       try {
         this.setOffline(agentId, transport);
-      } catch {}
+      } catch  {
+      // swallow-ok: best-effort disposal cleanup
+    }
     };
 
     return { sessionId, timer, cleanup };

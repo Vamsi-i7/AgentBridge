@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { AuditLogger } from '../src/audit-logger.js';
 import { TaskManager } from '../src/task-manager.js';
 import { AttemptLedger } from '../src/attempts/attempt-ledger.js';
@@ -13,7 +14,10 @@ import { EffectsLedger } from '../src/effects/effects-ledger.js';
 import { CONFIG } from '../src/config.js';
 
 test('Workspace Isolation & Worktree Invariants Suite', async (t) => {
-  const tmpRoot = path.join(process.cwd(), 'tmp-ws-test-' + Date.now());
+  const tmpRoot = path.join(os.tmpdir(), 'tmp-ws-test-' + Date.now());
+  t.after(() => {
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+  });
   const worktreesDir = path.join(tmpRoot, 'worktrees');
   const mockRepo = path.join(tmpRoot, 'repo');
   const protectedRepo = path.join(tmpRoot, 'protected-zia-mock');
